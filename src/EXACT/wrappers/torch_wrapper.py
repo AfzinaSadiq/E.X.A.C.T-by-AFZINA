@@ -8,6 +8,7 @@ class TorchWrapper(BaseWrapper):
         -> .load -> loads model weights from specified path for wrapped model.\n
         -> .get_params -> returns model parameters as a Dict object).\n
         -> .set_params -> sets model parameters as per input parameters of type **params\n
+        -> .get_last_conv_layer -> returns the final convolutional layer for the wrapped CNN model.
 
         Dependencies = ["torch"]
     """

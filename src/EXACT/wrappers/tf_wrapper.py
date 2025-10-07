@@ -1,4 +1,4 @@
-from base_wrapper import BaseWrapper
+from .base_wrapper import BaseWrapper
 
 class TFWrapper(BaseWrapper):
     """Class for wrapping tensorflow models.\n

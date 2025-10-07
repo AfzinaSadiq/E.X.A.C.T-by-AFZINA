@@ -1,10 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from wrappers.base_wrapper import BaseWrapper
-from wrappers.torch_wrapper import TorchWrapper
-from wrappers.tf_wrapper import TFWrapper
-
+from ..wrappers import BaseWrapper, TorchWrapper, TFWrapper
 class GradCAM:
     """The Grad-CAM explainer module (original grad-cam).\n
        Supported Functionalities:\n
@@ -13,7 +10,7 @@ class GradCAM:
 
     def __init__(self, wrapped_model: BaseWrapper, target_layer = None):
         self.model = wrapped_model
-        self.target_layer = target_layer or self.model.get_last_conv_layer()
+        self.target_layer = target_layer or self.model.get_last_conv_layer()[0]
 
     def generate_heatmap(self, input_data, class_index = None):
         if isinstance(self.model, TorchWrapper):
@@ -23,23 +20,25 @@ class GradCAM:
         else:
             return NotImplementedError("GradCAM not supported for this backend")
         
-    def overlay_heatmap(self, heatmap, image, alpha = 0.4, show = True, cmap = "jet"):
-        heatmap = np.heatmap(heatmap, 0)
+    def overlay_heatmap(self, heatmap, image, alpha = 0.4, show = True, cmap = "jet", save_png = False):
+        #heatmap = np.heatmap(heatmap, 0)
         heatmap /= np.max(heatmap) if np.max(heatmap) > 0 else 1
 
         heatmap_resized = np.array(
-            Image.fromarray(np.uint8(255 * heatmap)).resize((image.shape[1], image.shape[0]))
+            Image.fromarray(np.uint8(255 * heatmap)).resize(image.size)
         ) / 255.0
 
         colormap = plt.get_cmap(cmap)
         heatmap_color = colormap(heatmap_resized)[..., :3]
 
-        overlay = (image * (1 - alpha) + heatmap_color * 255 *alpha).astype(np.uint8)
+        image_np = np.array(image)
+
+        overlay = (image_np * (1 - alpha) + heatmap_color * 255 *alpha).astype(np.uint8)
         
         if show:
             fig, ax = plt.subplots(1, 3, figsize=(12, 4))
             ax[0].set_title("Original")
-            ax[0].imshow(image[..., ::-1])  # BGR -> RGB
+            ax[0].imshow(image_np[..., ::-1])  # BGR -> RGB
             ax[0].axis("off")
 
             ax[1].set_title("Heatmap")
@@ -51,6 +50,14 @@ class GradCAM:
             ax[2].axis("off")
 
             plt.show()
+
+        if save_png:
+            import os
+            save_dir = "user_saves"
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, "gradcam_overlay.png")
+            Image.fromarray(overlay).save(save_path)
+            print(f"Overlay heatmap saved to {save_path}")
 
         return overlay
     
@@ -66,16 +73,24 @@ class GradCAM:
 
         def forward_hook(module, inp, out):
             nonlocal features
-            features = out.detach
+            features = out.detach()
         def backward_hook(module, grad_in, grad_out):
             nonlocal gradients
-            gradients - grad_out[0].detach()
+            gradients = grad_out[0].detach()
 
         target_layer = self.target_layer
         handle_fw = target_layer.register_forward_hook(forward_hook)
-        handle_bw = target_layer.register_backward_hook(backward_hook)
+        handle_bw = target_layer.register_full_backward_hook(backward_hook)
 
-        inp = torch.tensor(input_data, dtype=torch.float32).unsqueeze(0).to(self.model.device)
+        if isinstance(input_data, torch.Tensor):
+            inp = input_data.detach().clone().float().unsqueeze(0).to(self.model.device)
+        elif isinstance(input_data, np.ndarray):
+            inp = torch.from_numpy(input_data).float().unsqueeze(0).to(self.model.device)
+        elif isinstance(input_data, Image.Image):
+            inp = torch.from_numpy(np.array(input_data)).float().unsqueeze(0).to(self.model.device)
+        else:
+            raise TypeError("Unsupported input type for GradCAM: {}".format(type(input_data)))
+        
         output = model(inp)
 
         if class_index is None:

@@ -1,14 +1,23 @@
 import torch
 from torch import nn
-from src.EXACT.wrappers import TorchWrapper
-
-###To run any file under tests module type in the command : python -m tests.filename    here : (python -m tests.test_wrappers)
+from PIL import Image
+from torchvision import transforms
+from EXACT.wrappers import TorchWrapper
+from EXACT.explainers.gradcam import GradCAM
 
 def test1():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
 
-    ##Glenn Mathews Sep 21 - test status - Successfull!!
+    tf = transforms.Compose([
+        transforms.Resize((128,128)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+    ])
+
+    img = Image.open("models/Te-me_0010.jpg").convert("RGB")
+    p_img = tf(img)
+
+
     class tumor_model(nn.Module):
         def __init__(self):
             super().__init__()
@@ -28,19 +37,15 @@ def test1():
         def forward(self, x):
             return self.layer_stack(x)
     
+    ##------------------------------------------Actual testing code------------------
     test_model = tumor_model()
     wrapped_model = TorchWrapper(test_model)
-    wrapped_model.load(path = "models/model_1.pth")
-    print(wrapped_model.get_params())
-    print(wrapped_model.get_last_conv_layer())
-
-
-#nandu sep 23 test status: 
-def test2():
-    pass
+    gradcam = GradCAM(wrapped_model)
+    heatmap = gradcam.generate_heatmap(input_data=p_img)
+    final_heatmap = gradcam.overlay_heatmap(heatmap=heatmap, image = img, show=True, save_png=True)
+    print(final_heatmap)
+    ##-------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     test1()
-
-
-
+    

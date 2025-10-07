@@ -1,15 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mlmodels"                  # Your package name on PyPI
+name = "EXACT"                  # Your package name on PyPI
 version = "0.1.0"                  # Semantic version
 description = "Framework-agnostic library for explainable AI (XAI) methods like GradCAM, LIME, SHAP."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Your Name", email = "your.email@example.com" }
+  { name = "Glenn Mathews", email = "glennmathews18@gmail.com" }
 ]
 keywords = ["xai", "explainability", "gradcam", "lime", "shap", "ml", "ai"]
 classifiers = [
@@ -30,12 +30,13 @@ dependencies = [
 [project.optional-dependencies]
 pytorch = ["torch", "torchvision"]
 tensorflow = ["tensorflow", "keras"]
+all = ["torch", "torchvision", "tensorflow", "keras"]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/mlmodels"
-Documentation = "https://github.com/yourusername/mlmodels/wiki"
-Source = "https://github.com/yourusername/mlmodels"
-Tracker = "https://github.com/yourusername/mlmodels/issues"
+#Homepage = "https://github.com/yourusername/mlmodels"
+#Documentation = "https://github.com/yourusername/mlmodels/wiki"
+#Source = "https://github.com/yourusername/mlmodels"
+#Tracker = "https://github.com/yourusername/mlmodels/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}   # tells setuptools where your code lives
