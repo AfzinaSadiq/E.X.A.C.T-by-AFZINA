@@ -1,1 +1,7 @@
 __pycache__/
+user_saves/
+
+dist/
+build/
+*.egg-info/
+.eggs/

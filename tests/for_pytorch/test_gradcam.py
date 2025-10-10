@@ -2,8 +2,6 @@ import torch
 from torch import nn
 from PIL import Image
 from torchvision import transforms
-from EXACT.wrappers import TorchWrapper
-from EXACT.explainers.gradcam import GradCAM
 
 def test1():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,11 +36,14 @@ def test1():
             return self.layer_stack(x)
     
     ##------------------------------------------Actual testing code------------------
+    from EXACT.wrappers import TorchWrapper
+    from EXACT.explainers.gradcam import GradCAM
+
     test_model = tumor_model()
     wrapped_model = TorchWrapper(test_model)
     gradcam = GradCAM(wrapped_model)
     heatmap = gradcam.generate_heatmap(input_data=p_img)
-    final_heatmap = gradcam.overlay_heatmap(heatmap=heatmap, image = img, show=True, save_png=True)
+    final_heatmap = gradcam.overlay_heatmap(heatmap=heatmap, image = img, save_png=True)
     print(final_heatmap)
     ##-------------------------------------------------------------------------------
 

@@ -1,8 +1,8 @@
 import torch
 from torch import nn
-from src.EXACT.wrappers import TorchWrapper
+from EXACT.wrappers import TorchWrapper
 
-###To run any file under tests module type in the command : python -m tests.filename    here : (python -m tests.test_wrappers)
+###To run any file under tests module type in the command : python -m tests.filename    here : (python -m tests.for_pytorch.test_wrappers)
 
 def test1():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
