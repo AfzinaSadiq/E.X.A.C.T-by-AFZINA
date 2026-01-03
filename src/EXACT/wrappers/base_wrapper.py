@@ -4,8 +4,6 @@ from typing import Any, Dict
 class BaseWrapper(ABC):
     """Abstract base class for ML Model Wrappers"""
 
-    
-
     @abstractmethod
     def predict(self, X: Any, **kwargs) -> Any:
         """Make predictions with the model"""
