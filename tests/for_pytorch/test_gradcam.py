@@ -40,6 +40,7 @@ def test1():
     from EXACT.explainers.gradcam import GradCAM
 
     test_model = tumor_model()
+    test_model.load_state_dict(torch.load("models/model_1.pth", map_location = device))
     wrapped_model = TorchWrapper(test_model)
     gradcam = GradCAM(wrapped_model)
     heatmap = gradcam.generate_heatmap(input_data=p_img)

@@ -26,11 +26,11 @@ dependencies = [
     "matplotlib",
     "pillow",
 ]
-
+                                                                  
 [project.optional-dependencies]
 pytorch = ["torch", "torchvision"]
 tensorflow = ["tensorflow", "keras"]
-all = ["torch", "torchvision", "tensorflow", "keras"]
+all = ["torch", "torchvision", "tensorflow", "keras"]  
 
 [project.urls]
 #Homepage = "https://github.com/yourusername/mlmodels"

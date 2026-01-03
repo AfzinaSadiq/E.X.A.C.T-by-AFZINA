@@ -27,6 +27,42 @@ class TorchWrapper(BaseWrapper):
             X = torch.tensor(X, dtype = torch.float32).to(self.device)
             return self.model(X).cpu().numpy()
     
+    def predict_proba(self, X, **kwargs):
+        import torch
+        import torch.nn.functional as F
+
+        # print("Predict proba called, shape: ",X.shape)
+
+        self.model.eval()
+
+        #Convert numpy -> torch
+
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X,dtype=torch.float32)
+
+        # Handling the error of height,width,channel by converting the height,width,channel -> channel, height, width
+        # Pytorch model expects input shape [batch,channels,height,widht] but
+        # Lime is sending image as [batch,height,width,channels]
+        # So when lime perturbs image it passes in this format to our pytorch wrapper and it will crash because of unexpected input type
+        # Handling error ->
+        if X.ndim == 4 and X.shape[-1] == 3:
+            # (N, H, W, C) -> (N, C, H, W)
+            X = X.permute(0,3,1,2) # Permute is use to change the dimension 
+        
+
+        X = X.to(self.device)
+
+        with torch.no_grad():
+            logits = self.model(X)
+
+            # Binary vs multi-class
+            if logits.ndim == 2 and logits.shape[-1] == 1:
+                probs = torch.sigmoid(logits)
+            else:
+                probs = torch.softmax(logits,dim=1)
+        
+        return probs.cpu().numpy()
+
     def save(self, path: str):
         import torch
         torch.save(self.model.state_dict(), path)
@@ -37,7 +73,7 @@ class TorchWrapper(BaseWrapper):
         print("[LOG] Successfully loaded model weights.")
 
     def get_params(self):
-        return {"state_dict":  self.model.state_dict}
+        return {"state_dict":  self.model.state_dict()}
     
     def set_params(self, **params):
         self.model.load_state_dict(params["state_dict"])
