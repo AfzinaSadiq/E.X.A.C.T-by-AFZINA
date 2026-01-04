@@ -9,6 +9,11 @@ class BaseWrapper(ABC):
         """Make predictions with the model"""
         pass
 
+    @abstractmethod # Added new
+    def predict_proba(self,X:Any, **kwargs) -> Any:
+        """Get prediction probability"""
+        pass
+    
     @abstractmethod
     def save(self, path: str) -> None:
         """Save model to disk"""
