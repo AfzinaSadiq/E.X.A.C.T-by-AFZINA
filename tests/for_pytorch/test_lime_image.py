@@ -2,7 +2,6 @@ import torch
 from torch import nn
 import numpy as np
 from PIL import Image
-from torchvision import transforms
 import matplotlib.pyplot as plt
 import os
 
@@ -10,13 +9,6 @@ def test_lime_image():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # -------------------------------------- Image preprocessing --------------------------------------
-    transform = transforms.Compose([
-        transforms.Resize((128,128)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5, 0.5, 0.5],
-                             [0.5, 0.5, 0.5])
-    ])
 
     img = Image.open("models\\Te-me_0010.jpg").convert("RGB")
     # img_tensor = transform(img)
@@ -58,39 +50,25 @@ def test_lime_image():
 
     # -------------------------------------- LIME Explainer --------------------------------------
     
-    from src.EXACT.explainers.lime_image_explainer import LimeImageExplainer
+    from src.EXACT.explainers.lime_image_explainer import LimeExplainer_Image
 
-    lime_image_explainer = LimeImageExplainer(wrapped_model, num_samples = 1000)
+    lime_image_explainer = LimeExplainer_Image(wrapped_model, num_samples = 1000)
 
     explanation = lime_image_explainer.explain(img_np, top_labels=1) 
 
-    lime_image = lime_image_explainer.get_visualization(explanation)
-
     # -------------------------------------- Visualization --------------------------------------
 
-    plt.figure(figsize=(10,4))
+    os.makedirs("outputs",exist_ok=True)
 
-    # Original image
-    plt.subplot(1,2,1)
-    plt.imshow(img)
-    plt.title("Original image")
-    plt.axis("off")
+    lime_image_explainer.plot_explanation(
+        explanation = explanation,
+        original_image = img_np,
+        num_features = 3,
+        save_path="outputs/lime_image_explanation2.0.png",
+        show = True
+    )
 
-    #Limee explanation
-    plt.subplot(1,2,2)
-    plt.imshow(lime_image)
-    plt.title("LIME Explanation")
-    plt.axis("off")
-
-    plt.suptitle("Tumor Detection - LIME Explanation", fontsize=14)
-
-    os.makedirs("outputs",exist_ok = True)
-    plt.tight_layout()
-    plt.savefig("outputs/lime_image_explanation2.0.png",bbox_inches="tight",dpi=300)
-    plt.close()
-
-
-    print("Saved the output image: outputs/lime_image_explanation.png")
+    print("LIME image explanation saved to outputs/lime_image_explanation.png")
 
 if __name__ == '__main__':
     test_lime_image()
