@@ -18,7 +18,7 @@ def test_lime_image():
                              [0.5, 0.5, 0.5])
     ])
 
-    img = Image.open("models\\Te-me_0010.jpg").convert("RGB")
+    img = Image.open("models/Te-me_0010.jpg").convert("RGB")
     # img_tensor = transform(img)
 
     # Lime needs numpy image (H, W, C)
@@ -84,9 +84,9 @@ def test_lime_image():
 
     plt.suptitle("Tumor Detection - LIME Explanation", fontsize=14)
 
-    os.makedirs("outputs",exist_ok = True)
+    os.makedirs("user_saves",exist_ok = True)
     plt.tight_layout()
-    plt.savefig("outputs/lime_image_explanation2.0.png",bbox_inches="tight",dpi=300)
+    plt.savefig("user_saves/lime_image_explanation.png",bbox_inches="tight",dpi=300)
     plt.close()
 
 

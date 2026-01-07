@@ -1,115 +1,306 @@
+import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
-from ..wrappers import BaseWrapper, TorchWrapper, TFWrapper
-class GradCAM:
-    """The Grad-CAM explainer module (original grad-cam).\n
-       Supported Functionalities:\n
-       -> .generate_heatmap(input_data, class_index) -> returns gradcam heatmap as a numpy object\n
-       -> .overlay_heatmap(heatmap, image, alpha, show, cmap) -> returns upsampled/resized heatmap that can be overlayed onto input image. Generates plot with heatmap overlayed image if show = True"""
+import torch
+from pathlib import Path
+from pytorch_grad_cam import (
+    GradCAM,
+    HiResCAM,
+    ScoreCAM,
+    GradCAMPlusPlus,
+    AblationCAM,
+    XGradCAM,
+    EigenCAM,
+    FullGrad,
+    GradCAMElementWise,
+)
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from EXACT.utils import get_last_conv_layer
 
-    def __init__(self, wrapped_model: BaseWrapper, target_layer = None):
-        self.model = wrapped_model
-        self.target_layer = target_layer or self.model.get_last_conv_layer()[0]
 
-    def generate_heatmap(self, input_data, class_index = None):
-        if isinstance(self.model, TorchWrapper):
-            return self._torch_gradcam(input_data, class_index)
-        elif isinstance(self.model, TFWrapper):
-            return self._tf_gradcam(input_data, class_index)
-        else:
-            return NotImplementedError("GradCAM not supported for this backend")
-        
-    def overlay_heatmap(self, heatmap, image, alpha = 0.4, show = True, cmap = "jet", save_png = False):
-        #heatmap = np.heatmap(heatmap, 0)
-        heatmap /= np.max(heatmap) if np.max(heatmap) > 0 else 1
+class GradCam:
+    """
+    A user-friendly wrapper for pytorch-grad-cam XAI methods.
 
-        heatmap_resized = np.array(
-            Image.fromarray(np.uint8(255 * heatmap)).resize(image.size)
-        ) / 255.0
+    Supports multiple Gradient-based Class Activation Map techniques:
+    - GradCAM
+    - HiResCAM
+    - ScoreCAM
+    - GradCAMPlusPlus
+    - AblationCAM
+    - XGradCAM
+    - EigenCAM
+    - FullGrad
+    - GradCAMElementWise
 
-        colormap = plt.get_cmap(cmap)
-        heatmap_color = colormap(heatmap_resized)[..., :3]
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The PyTorch model to explain
+    target_layers : list, optional
+        List of target layers for CAM computation. If None, uses last conv layer
+    save_dir : str, optional
+        Directory to save CAM visualizations. Default is 'user_saves/'
+    """
 
-        image_np = np.array(image)
+    METHODS = {
+        "gradcam": GradCAM,
+        "hirescam": HiResCAM,
+        "scorecam": ScoreCAM,
+        "gradcam++": GradCAMPlusPlus,
+        "ablationcam": AblationCAM,
+        "xgradcam": XGradCAM,
+        "eigencam": EigenCAM,
+        "fullgrad": FullGrad,
+        "gradcamelementwise": GradCAMElementWise,
+    }
 
-        overlay = (image_np * (1 - alpha) + heatmap_color * 255 *alpha).astype(np.uint8)
-        
-        if show:
-            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-            ax[0].set_title("Original")
-            ax[0].imshow(image_np[..., ::-1])  # BGR -> RGB
-            ax[0].axis("off")
+    def __init__(self, model, target_layers=None, save_dir="user_saves/"):
+        self.model = model
+        self.model.eval()
+        self.target_layers = target_layers or get_last_conv_layer(model)
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.cam_objects = {}
 
-            ax[1].set_title("Heatmap")
-            ax[1].imshow(heatmap_resized, cmap = cmap)
-            ax[1].axis("off")
+    def generate_cam(
+        self,
+        method="gradcam",
+        input_tensor=None,
+        targets=None,
+        eigen_smooth_samples=None,
+        eigen_smooth_sample_per_batch=None,
+    ):
+        """
+        Generate Class Activation Map using the specified method.
 
-            ax[2].set_title("Overlay")
-            ax[2].imshow(overlay)
-            ax[2].axis("off")
+        Parameters
+        ----------
+        method : str, optional
+            The CAM method to use. Options: 'gradcam', 'hirescam', 'scorecam',
+            'gradcam++', 'ablationcam', 'xgradcam', 'eigencam', 'fullgrad',
+            'gradcamelementwise'. Default is 'gradcam'.
+        input_tensor : torch.Tensor
+            Input tensor to generate CAM for. Shape: (B, C, H, W)
+        targets : list, optional
+            List of target class indices. If None, uses max probability class.
+        eigen_smooth_samples : int, optional
+            For EigenCAM: number of samples for smoothing
+        eigen_smooth_sample_per_batch : int, optional
+            For EigenCAM: samples per batch
 
-            plt.show()
+        Returns
+        -------
+        grayscale_cam : np.ndarray
+            Grayscale CAM of shape (H, W)
+        """
+        method = method.lower()
+        if method not in self.METHODS:
+            raise ValueError(
+                f"Method '{method}' not supported. "
+                f"Available: {list(self.METHODS.keys())}"
+            )
 
+        # Initialize CAM object if not already done
+        if method not in self.cam_objects:
+            cam_class = self.METHODS[method]
+            if method == "eigencam":
+                self.cam_objects[method] = cam_class(
+                    self.model,
+                    self.target_layers,
+                    use_cuda=next(self.model.parameters()).is_cuda,
+                    eigen_smooth_samples=eigen_smooth_samples or 16,
+                    eigen_smooth_sample_per_batch=eigen_smooth_sample_per_batch or 4,
+                )
+            else:
+                self.cam_objects[method] = cam_class(
+                    self.model,
+                    self.target_layers,
+                    use_cuda=next(self.model.parameters()).is_cuda,
+                )
+
+        cam_obj = self.cam_objects[method]
+
+        # Generate CAM
+        with torch.no_grad():
+            grayscale_cam = cam_obj(
+                input_tensor=input_tensor,
+                targets=targets,
+                eigen_smooth_samples=eigen_smooth_samples,
+                eigen_smooth_sample_per_batch=eigen_smooth_sample_per_batch,
+            )
+
+        return grayscale_cam[0]  # Return first batch item
+
+    def visualize_and_save(
+        self, input_image, cam, method="gradcam", class_name="", save_png=False
+    ):
+        """
+        Visualize CAM overlay on the original image and optionally save it.
+
+        Parameters
+        ----------
+        input_image : np.ndarray or torch.Tensor
+            Original input image. Shape: (H, W, 3) or (3, H, W)
+        cam : np.ndarray
+            Grayscale CAM from generate_cam(). Shape: (H, W)
+        method : str, optional
+            Method name for filename. Default is 'gradcam'.
+        class_name : str, optional
+            Class name for filename. Default is empty.
+        save_png : bool, optional
+            Whether to save the visualization. Default is False.
+
+        Returns
+        -------
+        visualization : np.ndarray
+            RGB image with CAM overlay
+        filepath : str or None
+            Path where image was saved (None if save_png=False)
+        """
+        # Convert tensor to numpy if needed
+        if isinstance(input_image, torch.Tensor):
+            input_image = input_image.cpu().numpy()
+
+        # Handle channel-first format
+        if input_image.shape[0] == 3:
+            input_image = np.transpose(input_image, (1, 2, 0))
+
+        # Normalize image if needed
+        if input_image.max() > 1.0:
+            input_image = input_image / 255.0
+
+        # Normalize CAM to [0, 1]
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+        # Create overlay
+        visualization = show_cam_on_image(input_image, cam, use_rgb=True)
+
+        filepath = None
         if save_png:
-            import os
-            save_dir = "user_saves"
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, "gradcam_overlay.png")
-            Image.fromarray(overlay).save(save_path)
-            print(f"Overlay heatmap saved to {save_path}")
+            # Create filename
+            class_suffix = f"_{class_name}" if class_name else ""
+            filename = f"{method.lower()}{class_suffix}.png"
+            filepath = self.save_dir / filename
 
-        return overlay
-    
-    def _torch_gradcam(self, input_data, class_index = None):
-        """Implementation of core Grad-CAM computation using PyTorch. """
-        import torch
-        
-        model = self.model.model
-        model.eval()
+            # Convert RGB to BGR for cv2.imwrite
+            visualization_bgr = cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(filepath), visualization_bgr)
+            print(f"✓ Saved: {filepath}")
 
-        features = None
-        gradients = None
+        return visualization, filepath
 
-        def forward_hook(module, inp, out):
-            nonlocal features
-            features = out.detach()
-        def backward_hook(module, grad_in, grad_out):
-            nonlocal gradients
-            gradients = grad_out[0].detach()
+    def explain(
+        self,
+        input_tensor,
+        method="gradcam",
+        targets=None,
+        input_image=None,
+        class_name="",
+        save_png=False,
+    ):
+        """
+        Complete pipeline: generate CAM and visualize with optional save.
 
-        target_layer = self.target_layer
-        handle_fw = target_layer.register_forward_hook(forward_hook)
-        handle_bw = target_layer.register_full_backward_hook(backward_hook)
+        Parameters
+        ----------
+        input_tensor : torch.Tensor
+            Input tensor for model. Shape: (1, 3, H, W)
+        method : str, optional
+            CAM method to use. Default is 'gradcam'.
+        targets : list, optional
+            Target class indices. If None, uses max probability class.
+        input_image : np.ndarray, optional
+            Original image for visualization. If None, uses input_tensor.
+        class_name : str, optional
+            Class name for saving. Default is empty.
+        save_png : bool, optional
+            Whether to save visualization. Default is False.
 
-        if isinstance(input_data, torch.Tensor):
-            inp = input_data.detach().clone().float().unsqueeze(0).to(self.model.device)
-        elif isinstance(input_data, np.ndarray):
-            inp = torch.from_numpy(input_data).float().unsqueeze(0).to(self.model.device)
-        elif isinstance(input_data, Image.Image):
-            inp = torch.from_numpy(np.array(input_data)).float().unsqueeze(0).to(self.model.device)
-        else:
-            raise TypeError("Unsupported input type for GradCAM: {}".format(type(input_data)))
-        
-        output = model(inp)
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'cam': grayscale CAM
+            - 'visualization': RGB image with overlay
+            - 'filepath': path to saved image (or None)
+            - 'method': method used
+        """
+        # Generate CAM
+        cam = self.generate_cam(
+            method=method, input_tensor=input_tensor, targets=targets
+        )
 
-        if class_index is None:
-            class_index = output.argmax(dim=1).item()
+        # Use input_tensor for visualization if input_image not provided
+        if input_image is None:
+            input_image = input_tensor[0]
 
-        loss = output[:, class_index]
-        model.zero_grad()
-        loss.backward()
+        # Visualize and save
+        visualization, filepath = self.visualize_and_save(
+            input_image=input_image,
+            cam=cam,
+            method=method,
+            class_name=class_name,
+            save_png=save_png,
+        )
 
-        weights = gradients.mean(dim = [2,3], keepdim = True)
-        cam = (weights * features).sum(dim = 1).squeeze().cpu().numpy()
-        cam = np.maximum(cam,0)
-        cam = cam / (cam.max() + 1e-8)
+        return {
+            "cam": cam,
+            "visualization": visualization,
+            "filepath": filepath,
+            "method": method,
+        }
 
-        handle_fw.remove()
-        handle_bw.remove()
+    def use_all_methods(
+        self, input_tensor, methods=None, input_image=None, targets=None, save_png=False
+    ):
+        """
+        Generate CAM using multiple methods for comparison.
 
-        return cam
+        Parameters
+        ----------
+        input_tensor : torch.Tensor
+            Input tensor for model. Shape: (1, 3, H, W)
+        methods : list, optional
+            List of methods to compare. If None, uses all available methods.
+        input_image : np.ndarray, optional
+            Original image for visualization.
+        targets : list, optional
+            Target class indices.
+        save_png : bool, optional
+            Whether to save visualizations. Default is False.
 
-    def _tf_gradcam(self):
-        import tensorflow as tf
-        pass
+        Returns
+        -------
+        dict
+            Dictionary with method names as keys and results as values
+        """
+        if methods is None:
+            methods = list(self.METHODS.keys())
+
+        results = {}
+        for method in methods:
+            try:
+                result = self.explain(
+                    input_tensor=input_tensor,
+                    method=method,
+                    targets=targets,
+                    input_image=input_image,
+                    save_png=save_png,
+                )
+                results[method] = result
+                print(f"✓ {method.upper()} computed successfully")
+            except Exception as e:
+                print(f"✗ {method.upper()} failed: {str(e)}")
+                results[method] = None
+
+        return results
+
+    def list_methods(self):
+        """Print all available CAM methods."""
+        print("Available CAM Methods:")
+        for i, method in enumerate(self.METHODS.keys(), 1):
+            print(f"  {i}. {method}")
+
+    def get_model(self):
+        """Get the underlying model."""
+        return self.model
