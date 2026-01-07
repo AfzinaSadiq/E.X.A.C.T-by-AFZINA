@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from PIL import Image
 from torchvision import transforms
+import numpy as np
 
 def test1():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -13,7 +14,8 @@ def test1():
     ])
 
     img = Image.open("models/Te-me_0010.jpg").convert("RGB")
-    p_img = tf(img)
+    img_np = np.array(Image.open("models/Te-me_0010.jpg"))
+    p_img = tf(img).unsqueeze(0).to(device)
 
 
     class tumor_model(nn.Module):
@@ -36,16 +38,17 @@ def test1():
             return self.layer_stack(x)
     
     ##------------------------------------------Actual testing code------------------
-    from EXACT.wrappers import TorchWrapper
     from EXACT.explainers.gradcam import GradCAM
 
     test_model = tumor_model()
     test_model.load_state_dict(torch.load("models/model_1.pth", map_location = device))
-    wrapped_model = TorchWrapper(test_model)
-    gradcam = GradCAM(wrapped_model)
-    heatmap = gradcam.generate_heatmap(input_data=p_img)
-    final_heatmap = gradcam.overlay_heatmap(heatmap=heatmap, image = img, save_png=True)
-    print(final_heatmap)
+    explainer = GradCAM(test_model)
+    result = explainer.use_all_methods(
+        input_tensor = p_img,
+        input_image = img_np,
+        save_png = True
+    )
+    print(result)
     ##-------------------------------------------------------------------------------
 
 if __name__ == "__main__":

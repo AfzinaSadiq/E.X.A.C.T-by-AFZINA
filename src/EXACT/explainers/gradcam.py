@@ -17,7 +17,7 @@ from pytorch_grad_cam.utils.image import show_cam_on_image
 from EXACT.utils import get_last_conv_layer
 
 
-class GradCam:
+class GradCAM:
     """
     A user-friendly wrapper for pytorch-grad-cam XAI methods.
 
@@ -35,11 +35,10 @@ class GradCam:
     Parameters
     ----------
     model : torch.nn.Module
-        The PyTorch model to explain
     target_layers : list, optional
         List of target layers for CAM computation. If None, uses last conv layer
     save_dir : str, optional
-        Directory to save CAM visualizations. Default is 'user_saves/'
+        Default is 'user_saves/'
     """
 
     METHODS = {
@@ -67,8 +66,6 @@ class GradCam:
         method="gradcam",
         input_tensor=None,
         targets=None,
-        eigen_smooth_samples=None,
-        eigen_smooth_sample_per_batch=None,
     ):
         """
         Generate Class Activation Map using the specified method.
@@ -83,10 +80,6 @@ class GradCam:
             Input tensor to generate CAM for. Shape: (B, C, H, W)
         targets : list, optional
             List of target class indices. If None, uses max probability class.
-        eigen_smooth_samples : int, optional
-            For EigenCAM: number of samples for smoothing
-        eigen_smooth_sample_per_batch : int, optional
-            For EigenCAM: samples per batch
 
         Returns
         -------
@@ -103,30 +96,18 @@ class GradCam:
         # Initialize CAM object if not already done
         if method not in self.cam_objects:
             cam_class = self.METHODS[method]
-            if method == "eigencam":
-                self.cam_objects[method] = cam_class(
-                    self.model,
-                    self.target_layers,
-                    use_cuda=next(self.model.parameters()).is_cuda,
-                    eigen_smooth_samples=eigen_smooth_samples or 16,
-                    eigen_smooth_sample_per_batch=eigen_smooth_sample_per_batch or 4,
-                )
-            else:
-                self.cam_objects[method] = cam_class(
-                    self.model,
-                    self.target_layers,
-                    use_cuda=next(self.model.parameters()).is_cuda,
-                )
+            self.cam_objects[method] = cam_class(
+                self.model,
+                self.target_layers,
+            )
 
         cam_obj = self.cam_objects[method]
 
-        # Generate CAM
-        with torch.no_grad():
+        # Generate CAM (enable gradients for gradient-based methods)
+        with torch.enable_grad():
             grayscale_cam = cam_obj(
                 input_tensor=input_tensor,
                 targets=targets,
-                eigen_smooth_samples=eigen_smooth_samples,
-                eigen_smooth_sample_per_batch=eigen_smooth_sample_per_batch,
             )
 
         return grayscale_cam[0]  # Return first batch item
@@ -171,6 +152,12 @@ class GradCam:
 
         # Normalize CAM to [0, 1]
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+        # Upscale CAM to match image dimensions (preserve image quality)
+        input_h, input_w = input_image.shape[0], input_image.shape[1]
+        cam_h, cam_w = cam.shape
+        if (input_h, input_w) != (cam_h, cam_w):
+            cam = cv2.resize(cam, (input_w, input_h))
 
         # Create overlay
         visualization = show_cam_on_image(input_image, cam, use_rgb=True)
