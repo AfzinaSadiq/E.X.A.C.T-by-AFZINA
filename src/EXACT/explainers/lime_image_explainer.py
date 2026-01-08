@@ -5,7 +5,7 @@ from PIL import Image
 
 
 
-class LimeImageExplainer:
+class LimeExplainer_Image:
     """
     LIME Image Explainer for Exact Library
     Works with Pytorch and Tensorflow
@@ -17,6 +17,8 @@ class LimeImageExplainer:
         self.num_samples = num_samples  # Number of perturbed samples LIME generates
         self.target_size = target_size  # Target image size for model input
         self.explainer = lime_image.LimeImageExplainer()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
     @staticmethod
     def _preprocess_image(image, target_size):
@@ -89,8 +91,28 @@ class LimeImageExplainer:
         hide_rest=True,
     ):
         """
-        Returns LIME visualization
+        Extract visualization data (image + mask) from LIME explanation.
 
+        Parameters
+        ----------
+        explanation : lime.explanation.Explanation
+            Lime explanation object
+        label : int, optional
+            Class label to visualize (defaults to top predicted label)
+        positive_only: bool
+            Show only positive contributing regions
+        num_features: int
+            Number of superpixels to displa y
+        hide_rest : bool
+            Hide non-important  regions
+
+        Returns
+        --------
+        lime_image : np.ndarray
+            Image with important region retained
+        mask : np.ndarray
+            Binary mask indicating important superpixels
+    
         """
 
         if label is None:
