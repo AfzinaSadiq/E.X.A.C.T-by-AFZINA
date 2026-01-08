@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "EXACT"                  # Your package name on PyPI
 version = "0.1.0"                  # Semantic version
-description = "Framework-agnostic library for explainable AI (XAI) methods like GradCAM, LIME, SHAP."
+description = "Comprehensive Library for explainable AI (XAI) methods like GradCAM, LIME, SHAP."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -20,17 +20,15 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 
-# Runtime dependencies (minimal)
+# Runtime dependencies (all required)
 dependencies = [
+    "torch",
+    "torchvision",
     "numpy",
     "matplotlib",
     "pillow",
-]
-                                                                  
-[project.optional-dependencies]
-pytorch = ["torch", "torchvision"]
-tensorflow = ["tensorflow", "keras"]
-all = ["torch", "torchvision", "tensorflow", "keras"]  
+    "grad-cam",
+]  
 
 [project.urls]
 #Homepage = "https://github.com/yourusername/mlmodels"

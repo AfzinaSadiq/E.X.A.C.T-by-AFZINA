@@ -2,7 +2,6 @@ import torch
 from torch import nn
 import numpy as np
 from PIL import Image
-import matplotlib.pyplot as plt
 import os
 
 def test_lime_image():
@@ -11,7 +10,6 @@ def test_lime_image():
 
 
     img = Image.open("models\\Te-me_0010.jpg").convert("RGB")
-    # img_tensor = transform(img)
 
     # Lime needs numpy image (H, W, C)
     img_np = np.array(img.resize((128,128)))
@@ -43,16 +41,11 @@ def test_lime_image():
     model.load_state_dict(torch.load("models/model_1.pth",map_location=device))
     model.eval()
 
-    # -------------------------------------- Wrap model --------------------------------------
-   
-    from src.EXACT.wrappers import TorchWrapper
-    wrapped_model = TorchWrapper(model)
-
     # -------------------------------------- LIME Explainer --------------------------------------
     
     from src.EXACT.explainers.lime_image_explainer import LimeExplainer_Image
 
-    lime_image_explainer = LimeExplainer_Image(wrapped_model, num_samples = 1000)
+    lime_image_explainer = LimeExplainer_Image(model, num_samples = 1000)
 
     explanation = lime_image_explainer.explain(img_np, top_labels=1) 
 
@@ -63,8 +56,8 @@ def test_lime_image():
     lime_image_explainer.plot_explanation(
         explanation = explanation,
         original_image = img_np,
-        num_features = 3,
-        save_path="outputs/lime_image_explanation2.0.png",
+        num_features = 2,
+        save_path="user_saves/lime_image_explanation.png",
         show = True
     )
 

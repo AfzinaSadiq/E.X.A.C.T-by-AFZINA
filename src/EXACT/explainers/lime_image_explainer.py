@@ -2,25 +2,25 @@ import numpy as np
 from lime import lime_image
 from skimage.segmentation import mark_boundaries
 import matplotlib.pyplot as plt
+import torch
+from ..utils import predict_proba_fn
 
 class LimeExplainer_Image:
     """
     LIME Image Explainer for Exact Library 
     Works with Pytorch and Tensorflow
-
     Main responsibilities:
         - Generate LIME explanations
         - Return raw visualization data (image + mask)
         - Provide optional plotting utilites for  users
-    
     """
 
-    def __init__(self, wrapped_model, num_samples = 1000):
-
-
-        self.model = wrapped_model
+    def __init__(self, model, num_samples = 1000):
+        self.model = model
         self.num_samples = num_samples # Number of perturbed samples LIME generates, More samples = better explanation but slower
         self.explainer = lime_image.LimeImageExplainer()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
     # Core explanation logic
     def explain(self, image, top_labels = 1):
@@ -43,7 +43,7 @@ class LimeExplainer_Image:
         def predict_fn(images):
             # Lime gives a list of images -> convert to numpy
             images = np.array(images)
-            return self.model.predict_proba(images)
+            return predict_proba_fn.predict_proba(images,model=self.model)
         
         explanation = self.explainer.explain_instance(
             image = image,
@@ -95,7 +95,7 @@ class LimeExplainer_Image:
         return lime_image, mask
     
     # Ploting utility (Optional for users)
-    def plot_explanation(self, explanation, original_image = None, label = None, positive_only = True, num_features = 3, hide_rest = True, figsize=(8,4), title = "LIME Explanation", show = True, save_path = None):
+    def plot_explanation(self, explanation, original_image = None, label = None, positive_only = False, num_features = 3, hide_rest = False, figsize=(8,4), title = "LIME Explanation", show = True, save_path = None):
         """
         Plot and optionally save the LIME image explanation.
 
