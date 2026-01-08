@@ -92,6 +92,7 @@ class LimeExplainer_Image:
             hide_rest = hide_rest # Hide irrelevant regions
         )
 
+        
         return lime_image, mask
     
     # Ploting utility (Optional for users)
