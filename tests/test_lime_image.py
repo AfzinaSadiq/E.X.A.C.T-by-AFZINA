@@ -2,24 +2,13 @@ import torch
 from torch import nn
 import numpy as np
 from PIL import Image
-from torchvision import transforms
-import matplotlib.pyplot as plt
-import os
 
 def test_lime_image():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # -------------------------------------- Image preprocessing --------------------------------------
-    transform = transforms.Compose([
-        transforms.Resize((128,128)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5, 0.5, 0.5],
-                             [0.5, 0.5, 0.5])
-    ])
 
-    img = Image.open("models/Te-me_0010.jpg").convert("RGB")
-    # img_tensor = transform(img)
+    img = Image.open("models\\Te-me_0010.jpg").convert("RGB")
 
     # Lime needs numpy image (H, W, C)
     img_np = np.array(img.resize((128,128)))
@@ -51,46 +40,25 @@ def test_lime_image():
     model.load_state_dict(torch.load("models/model_1.pth",map_location=device))
     model.eval()
 
-    # -------------------------------------- Wrap model --------------------------------------
-   
-    from src.EXACT.wrappers import TorchWrapper
-    wrapped_model = TorchWrapper(model)
-
     # -------------------------------------- LIME Explainer --------------------------------------
     
-    from src.EXACT.explainers.lime_image_explainer import LimeImageExplainer
+    from EXACT.explainers.lime_image_explainer import LimeExplainer_Image
 
-    lime_image_explainer = LimeImageExplainer(wrapped_model, num_samples = 1000)
+    lime_image_explainer = LimeExplainer_Image(model, num_samples = 1000, target_size=(128,128))
 
-    explanation = lime_image_explainer.explain(img_np, top_labels=1) 
-
-    lime_image = lime_image_explainer.get_visualization(explanation)
+    explanation = lime_image_explainer.explain(img_np, top_labels=1, preprocess=True) 
 
     # -------------------------------------- Visualization --------------------------------------
 
-    plt.figure(figsize=(10,4))
 
-    # Original image
-    plt.subplot(1,2,1)
-    plt.imshow(img)
-    plt.title("Original image")
-    plt.axis("off")
+    lime_image_explainer.overlay_heatmap(
+        explanation = explanation,
+        original_image = img_np,
+        num_features = 3,
+        save_png=True,
+        show = True
+    )
 
-    #Limee explanation
-    plt.subplot(1,2,2)
-    plt.imshow(lime_image)
-    plt.title("LIME Explanation")
-    plt.axis("off")
-
-    plt.suptitle("Tumor Detection - LIME Explanation", fontsize=14)
-
-    os.makedirs("user_saves",exist_ok = True)
-    plt.tight_layout()
-    plt.savefig("user_saves/lime_image_explanation.png",bbox_inches="tight",dpi=300)
-    plt.close()
-
-
-    print("Saved the output image: outputs/lime_image_explanation.png")
 
 if __name__ == '__main__':
     test_lime_image()
