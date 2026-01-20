@@ -24,7 +24,7 @@ def test_lime_text():
 
     vocab_size = len(vocab) + 1 # +1 for unknown tokens
 
-    # ------------------------- Simple Tokenizer -------------------------
+    # ------------------------- Simple Tokenizer --------------------------
 
     def simple_tokenizer(texts):
         encoded = []
