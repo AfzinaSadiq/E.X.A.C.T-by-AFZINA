@@ -42,7 +42,7 @@ def test_lime_text():
 
         return torch.tensor(encoded, dtype = torch.long)
     
-    # ------------------------- Simple Text Classification Model -------------------------
+    # ------------------------- Simple Text Classification Model ------------------------
 
     class TextModel(nn.Module):
         def __init__(self):
