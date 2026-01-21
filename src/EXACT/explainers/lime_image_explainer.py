@@ -208,7 +208,7 @@ class LimeExplainer_Image:
         if save_png:
             save_dir = "user_saves"
             os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, "lime_image_explanation.png")
+            save_path = os.path.join(save_dir, "lime_image_explanation_2.0.png")
 
             # Convert visualization to uint8 and save
             vizualization_uint8 = (overlay_image * 255).astype(np.uint8)
