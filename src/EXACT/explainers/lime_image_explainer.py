@@ -10,7 +10,6 @@ import os
 class LimeExplainer_Image:
     """
     LIME Image Explainer for Exact Library 
-    Works with Pytorch and Tensorflow
     Main responsibilities:
         - Generate LIME explanations
         - Return raw visualization data (image + mask)
