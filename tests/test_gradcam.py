@@ -38,7 +38,7 @@ def test1():
             return self.layer_stack(x)
     
     ##------------------------------------------Actual testing code------------------
-    from EXACT.explainers.gradcam import GradCAM
+    from EXACT.explainers import GradCAM
 
     test_model = tumor_model()
     test_model.load_state_dict(torch.load("models/model_1.pth", map_location = device))
