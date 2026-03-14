@@ -1,3 +1,4 @@
+#explainers/dff.py
 import cv2
 import numpy as np
 import torch
@@ -5,7 +6,6 @@ from pathlib import Path
 from pytorch_grad_cam import DeepFeatureFactorization
 from pytorch_grad_cam.utils.image import show_factorization_on_image
 from EXACT.utils import get_last_conv_layer
-
 
 class DFF:
     """
@@ -41,14 +41,7 @@ class DFF:
         Directory to save output visualizations. Default is 'user_saves/dff_saves'.
     """
 
-    def __init__(
-        self,
-        model,
-        target_layer=None,
-        computation_on_concepts=None,
-        n_components=5,
-        save_dir="user_saves/dff_saves",
-    ):
+    def __init__(self, model, target_layer=None, computation_on_concepts=None, n_components=5, save_dir="user_saves/dff_saves",):
         self.model = model
         self.model.eval()
         self.target_layer = target_layer or get_last_conv_layer(model)
@@ -63,17 +56,7 @@ class DFF:
             computation_on_concepts=self.computation_on_concepts,
         )
 
-    def explain(
-        self,
-        input_tensor,
-        input_image=None,
-        n_components=None,
-        class_names=None,
-        top_k=2,
-        image_weight=0.3,
-        save_png=False,
-        tag="",
-    ):
+    def explain(self, input_tensor, input_image=None, n_components=None, class_names=None, top_k=2, image_weight=0.3, save_png=False, tag=""):
         """
         Discover and visualize the visual concepts in an image.
 

@@ -1,3 +1,4 @@
+#explainers/vit_gradcame.py
 import cv2
 import numpy as np
 import torch
@@ -86,14 +87,7 @@ class ViTGradCAM:
         "eigencam": EigenCAM,
     }
 
-    def __init__(
-        self,
-        model,
-        arch="vit",
-        target_layer=None,
-        patch_size=None,
-        save_dir="user_saves/vit_cam_saves",
-    ):
+    def __init__(self, model, arch="vit", target_layer=None, patch_size=None, save_dir="user_saves/vit_cam_saves"):
         arch = arch.lower()
         if arch not in ("vit", "swin"):
             raise ValueError(f"arch must be 'vit' or 'swin', got '{arch}'")
@@ -122,15 +116,7 @@ class ViTGradCAM:
 
         return layer, reshape
 
-    def explain(
-        self,
-        input_tensor,
-        input_image=None,
-        targets=None,
-        method="gradcam",
-        class_name="",
-        save_png=False,
-    ):
+    def explain(self, input_tensor, input_image=None, targets=None, method="gradcam", class_name="", save_png=False):
         """
         Generate and visualize a CAM for a Vision Transformer.
 
