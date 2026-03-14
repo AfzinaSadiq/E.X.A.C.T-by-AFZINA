@@ -3,7 +3,7 @@ from lime import lime_image
 from skimage.segmentation import mark_boundaries
 import matplotlib.pyplot as plt
 import torch
-from ..utils import predict_proba_fn
+from EXACT.utils import predict_proba_fn
 from PIL import Image
 import os
 

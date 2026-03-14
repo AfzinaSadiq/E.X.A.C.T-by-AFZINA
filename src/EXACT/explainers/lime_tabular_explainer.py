@@ -1,6 +1,8 @@
 import numpy as np
 from lime.lime_tabular import LimeTabularExplainer
-from ..utils import predict_proba_fn
+from EXACT.utils import predict_proba_fn
+import matplotlib.pyplot as plt
+import os
 
 
 class LimeExplainer_Tabular:
@@ -63,7 +65,7 @@ class LimeExplainer_Tabular:
         '''
 
         def predict_fn(X):
-            return predict_proba_fn.predict_proba(X, model = self.model)
+            return predict_proba_fn.predict_proba(X, model = self.model, mode = self.mode)
         
         explanation = self.explainer.explain_instance(
             instance,
@@ -105,4 +107,79 @@ class LimeExplainer_Tabular:
             sign = "+" if score > 0 else "-"
             print(f"{feature:20s} {sign} {abs(score):.4f}")
 
-        return feature_scores
+        return feature_scores\
+        
+    # ----------------------------------------
+    # Bar plot visualization (NEW ADDITION)
+    # ----------------------------------------
+    def plot_explanation(self, explanation, label=None, num_features=10,
+                         figsize=(8,5), title="LIME Feature Contributions",
+                         show=True, save_png=None):
+        '''
+        Plot feature contributions as a horizontal bar chart.
+
+        Parameters
+        ----------
+        explanation : lime.explanation.Explanation
+
+        label : int, optional
+            Class label to visualize
+
+        num_features : int
+            Number of features to display
+
+        figsize : tuple
+            Figure size
+
+        title : str
+            Plot title
+
+        show : bool
+            Whether to display the plot
+
+        save_png : bool
+            Save visualization to user_saves directory
+        '''
+
+        feature_scores = self.get_explanation_data(
+            explanation,
+            label=label,
+            num_features=num_features
+        )
+
+        # Separate features and scores
+        features = [f for f, s in feature_scores]
+        scores = [s for f, s in feature_scores]
+
+        # Green for positive, red for negative contributions
+        colors = ["green" if s > 0 else "red" for s in scores]
+
+        plt.figure(figsize=figsize)
+
+        plt.barh(features, scores, color=colors)
+
+        plt.xlabel("Contribution Weight")
+        plt.title(title)
+
+        # Vertical line at zero
+        plt.axvline(0)
+
+        # Highest importance on top
+        plt.gca().invert_yaxis()
+
+        # Save image
+        if save_png:
+            save_dir = "user_saves"
+            os.makedirs(save_dir, exist_ok=True)
+
+            save_path = os.path.join(save_dir, "lime_tabular_explanation.png")
+            plt.savefig(save_path, bbox_inches="tight")
+
+            print(f"LIME tabular visualization saved to {save_path}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close()
+
+        return features, scores
