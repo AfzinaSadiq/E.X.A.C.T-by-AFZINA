@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import cv2
 import matplotlib
-matplotlib.use("Agg") # Agg stands for Anti-Grain Geometry # used when we dont need to display plots but only want to save them to files
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from typing import Dict, Optional
 
@@ -22,10 +22,36 @@ class IGImageExplainer:
         explainer = IGImageExplainer(model)
         results   = explainer.explain(img_tensor, img_bgr)
         explainer.save_dashboard(results, "explanation.png")
+
+    Supported models:
+        Any differentiable PyTorch model with output shape [batch, num_classes]
+        or [batch, 1] (sigmoid binary). Works with: ResNet, VGG, EfficientNet,
+        DenseNet, MobileNet, ViT, custom CNNs, InceptionV3, GoogLeNet, and more.
+
+    Does NOT work with:
+        Tree models (Random Forest, XGBoost), models with argmax/hard one-hot
+        layers, or any operation that breaks gradient flow.
+
+    Baseline:
+        Default is a black image (all zeros). This represents zero visual
+        information. Attributions measure pixel contribution vs. seeing nothing.
     """
 
     def __init__(self, model: nn.Module, device: Optional[torch.device] = None):
-        self.model = model.eval() # switches the model to evaluation mode
+        """
+        Args:
+            model  : A trained PyTorch model. Automatically put in eval() mode.
+            device : Target device. Defaults to the model's current device.
+
+        Note:
+            We do NOT set requires_grad=False on model parameters here.
+            IG gradients are computed w.r.t. the INTERPOLATED INPUT, not the
+            model weights. Disabling parameter gradients would permanently break
+            the model for the user (fine-tuning, continued training would fail).
+            torch.no_grad() is used only where model forward passes do not need
+            gradient tracking (target-class detection, convergence check).
+        """
+        self.model = model.eval()
         self.device = device or next(model.parameters()).device
 
     # ------------------------------------------------------------------
@@ -40,43 +66,97 @@ class IGImageExplainer:
         baseline: Optional[torch.Tensor] = None,
         steps: int = 200,
         batch_size: int = 32,
-        alpha: float = 0.5, # how strongly to blend the heatmap over the original image, 0.5 means 50% heatmap, 50% original.
+        alpha: float = 0.5,
     ) -> Dict:
         """
-        Run IG and return all visualizations.
+        Run Integrated Gradients and return all 4 visualizations.
 
         Args:
-            input_tensor  : Preprocessed image tensor [1, C, H, W]
-            original_bgr  : Original image as BGR numpy array [H, W, 3]
-            target_class  : Class index to explain. None = predicted class.
-            baseline      : Reference tensor [1, C, H, W]. None = black image.
-            steps         : Riemann sum steps. More = more accurate (100-300).
-            batch_size    : Steps processed per forward pass (tune for VRAM).
-            alpha         : Heatmap blend strength (0 = image, 1 = heatmap).
+            input_tensor  : Preprocessed image tensor [1, C, H, W].
+                            Must be float, normalised the same way as during training.
+            original_bgr  : Original image as BGR numpy array [H, W, 3].
+                            Used only for overlay rendering, not for IG computation.
+            target_class  : Class index to explain. None = model's top prediction.
+            baseline      : Reference tensor [1, C, H, W]. None = black image (zeros).
+                            MUST use the same normalisation as input_tensor.
+            steps         : Riemann sum steps. More = more accurate. 100-300 is ideal.
+            batch_size    : Steps processed per forward pass. Lower if VRAM is limited.
+            alpha         : Heatmap blend strength [0.0-1.0].
+                            0 = original image only, 1 = heatmap only. Default 0.5.
 
         Returns:
-            dict:
-                target_class       : int
-                convergence_delta  : float  (< 0.05 is good)
-                overlay_magnitude  : BGR ndarray — main importance heatmap
-                overlay_positive   : BGR ndarray — what supports the prediction
-                overlay_negative   : BGR ndarray — what suppresses the prediction
-                overlay_contour    : BGR ndarray — boundary of important region
+            dict with keys:
+                target_class       : int   — the class index that was explained
+                convergence_delta  : float — <0.05 excellent, <0.15 ok, >0.15 bad
+                overlay_magnitude  : BGR ndarray — overall importance heatmap
+                overlay_positive   : BGR ndarray — pixels supporting the prediction
+                overlay_negative   : BGR ndarray — pixels suppressing the prediction
+                overlay_contour    : BGR ndarray — contour of most important region
+
+        Raises:
+            ValueError : if input_tensor is not shape [1, C, H, W]
+            ValueError : if baseline shape does not match input_tensor
+            ValueError : if steps < 20 (too few for reliable approximation)
+            ValueError : if alpha is outside [0.0, 1.0]
         """
+        # ── Input validation ──────────────────────────────────────────
+        if input_tensor.dim() != 4 or input_tensor.shape[0] != 1:
+            raise ValueError(
+                f"input_tensor must be shape [1, C, H, W], got {tuple(input_tensor.shape)}. "
+                f"If you have a batch, use input_tensor[i:i+1] to select one image."
+            )
+        if steps < 20:
+            raise ValueError(
+                f"steps={steps} is too low. Use at least 50 (recommended: 100-300)."
+            )
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError(
+                f"alpha={alpha} is out of range. Must be between 0.0 and 1.0."
+            )
+
+        # ── Device & baseline setup ───────────────────────────────────
         input_tensor = input_tensor.to(self.device)
 
         if baseline is None:
-            baseline = torch.zeros_like(input_tensor)
+            baseline = torch.zeros_like(input_tensor)  # black image = no visual signal
+        else:
+            if baseline.shape != input_tensor.shape:
+                raise ValueError(
+                    f"baseline shape {tuple(baseline.shape)} must match "
+                    f"input_tensor shape {tuple(input_tensor.shape)}."
+                )
         baseline = baseline.to(self.device)
 
+        # ── Auto-detect target class ──────────────────────────────────
         if target_class is None:
             with torch.no_grad():
-                target_class = self.model(input_tensor).argmax(dim=1).item()
+                logits = self.model(input_tensor)
 
+                # Some models (InceptionV3, GoogLeNet) return (output, aux) tuple
+                # in train mode. eval() mode returns a plain tensor, but guard anyway.
+                if isinstance(logits, tuple):
+                    logits = logits[0]
+
+                # A 1D output means the batch dimension was accidentally squeezed.
+                # We cannot safely determine class count, so raise clearly.
+                if logits.dim() == 1:
+                    raise ValueError(
+                        f"Model output has shape {tuple(logits.shape)} (1D). "
+                        f"Expected [batch, num_classes] or [batch, 1]. "
+                        f"Check your model's forward() — it may be squeezing the batch dim."
+                    )
+
+                if logits.shape[1] == 1:          # sigmoid binary output [batch, 1]
+                    target_class = int(logits.squeeze() > 0.5)
+                else:
+                    target_class = logits.argmax(dim=1).item()
+
+        # ── Run IG ────────────────────────────────────────────────────
         attributions, delta = self._compute_attributions(
             input_tensor, baseline, target_class, steps, batch_size
         )
- 
+
+        # ── Build attribution maps ────────────────────────────────────
         mag_map = self._magnitude_map(attributions)
         pos_map = self._positive_map(attributions)
         neg_map = self._negative_map(attributions)
@@ -84,10 +164,18 @@ class IGImageExplainer:
         return {
             "target_class":      target_class,
             "convergence_delta": delta,
-            "overlay_magnitude": self._heatmap_overlay(mag_map, original_bgr, alpha, cv2.COLORMAP_JET),
-            "overlay_positive":  self._heatmap_overlay(pos_map, original_bgr, alpha, cv2.COLORMAP_HOT),
-            "overlay_negative":  self._heatmap_overlay(neg_map, original_bgr, alpha, cv2.COLORMAP_WINTER),
-            "overlay_contour":   self._contour_overlay(mag_map, original_bgr, threshold_pct=90.0),
+            "overlay_magnitude": self._heatmap_overlay(
+                mag_map, original_bgr, alpha, cv2.COLORMAP_JET
+            ),
+            "overlay_positive":  self._heatmap_overlay(
+                pos_map, original_bgr, alpha, cv2.COLORMAP_HOT
+            ),
+            "overlay_negative":  self._heatmap_overlay(
+                neg_map, original_bgr, alpha, cv2.COLORMAP_WINTER
+            ),
+            "overlay_contour":   self._contour_overlay(
+                mag_map, original_bgr, threshold_pct=90.0
+            ),
         }
 
     def save_dashboard(
@@ -98,7 +186,7 @@ class IGImageExplainer:
         dpi: int = 150,
     ) -> None:
         """
-        Saves a 2x2 explanation dashboard as a PNG.
+        Save a 2x2 explanation dashboard as a PNG.
 
         Layout:
             [ Magnitude  |  Positive ]
@@ -106,13 +194,17 @@ class IGImageExplainer:
 
         Args:
             results    : Output dict from .explain()
-            save_path  : Where to save (e.g. "explanation.png")
-            class_name : Human-readable class label for the title
-            dpi        : Output resolution
+            save_path  : File path (e.g. "explanation.png")
+            class_name : Human-readable class label for the dashboard title
+            dpi        : Output resolution (150 for screens, 300 for print)
         """
         delta = results["convergence_delta"]
         cls_str = f"Class: {class_name}" if class_name else f"Class: {results['target_class']}"
-        quality = "[OK]" if delta < 0.15 else "[!!] Increase steps"
+        quality = (
+            "[EXCELLENT]" if delta < 0.05 else
+            "[OK]"        if delta < 0.15 else
+            "[!!] Increase steps"
+        )
 
         panels = [
             ("Magnitude  (Overall Importance)",    "overlay_magnitude"),
@@ -123,8 +215,8 @@ class IGImageExplainer:
 
         fig, axes = plt.subplots(2, 2, figsize=(12, 10), facecolor="#111122")
         fig.suptitle(
-            f"Integrated Gradients - Explanation\n"
-            f"{cls_str} | Convergence Δ = {delta:.4f}  {quality}",
+            f"Integrated Gradients \u2014 Image Explanation\n"
+            f"{cls_str}  |  Convergence \u0394 = {delta:.4f}  {quality}",
             color="white", fontsize=12, fontweight="bold", y=0.98,
         )
 
@@ -134,8 +226,10 @@ class IGImageExplainer:
             ax.axis("off")
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight",
+            facecolor=fig.get_facecolor()
+        )
         plt.close(fig)
 
     # ------------------------------------------------------------------
@@ -150,52 +244,121 @@ class IGImageExplainer:
         steps: int,
         batch_size: int,
     ):
-        delta = input_tensor - baseline # the total difference between input and baseline. This is the "path" we will walk along.
-        alphas = torch.linspace(0, 1, steps + 1)[1:].to(self.device) # Creates steps evenly-spaced values from just above 0 to 1. linspace(0, 1, 201) gives 201 values; [1:] removes the first one (alpha=0, which is just the baseline itself). So we get alphas: [0.005, 0.010, ..., 1.0]. Each alpha represents a point along the path
+        """
+        Riemann sum approximation of the IG path integral.
+
+        Math:
+            IG(pixel_i) = (input_i - baseline_i)
+                          * (1/steps) * SUM_a [ dF(baseline + a*(input-baseline)) / d(pixel_i) ]
+
+        We skip alpha=0 (the baseline itself) because its gradient contributes
+        nothing to the path difference. So alphas runs from 1/steps to 1.0.
+        """
+        delta_path = input_tensor - baseline  # [1, C, H, W]
+
+        # Skip alpha=0 (baseline has zero path contribution)
+        alphas = torch.linspace(0, 1, steps + 1)[1:].to(self.device)  # [steps]
         accum_grad = torch.zeros_like(input_tensor)
 
-        for start in range(0, steps, batch_size): # Instead of computing one interpolated image at a time (slow), we process batch_size steps at once. range(0, 200, 32) gives [0, 32, 64, 96, 128, 160, 192] — seven batches.
-            batch_alphas = alphas[start : start + batch_size]
-            scaled = (baseline + batch_alphas.view(-1, 1, 1, 1) * delta).clone().detach().requires_grad_(True)
+        for start in range(0, steps, batch_size):
+            batch_alphas = alphas[start: start + batch_size]  # [B]
+
+            # Interpolate: baseline + alpha * (input - baseline)
+            # view(-1,1,1,1) broadcasts alpha across [C, H, W] dimensions
+            scaled = (
+                baseline + batch_alphas.view(-1, 1, 1, 1) * delta_path
+            ).clone().detach().requires_grad_(True)
 
             output = self.model(scaled)
+
+            # Handle tuple output (InceptionV3, GoogLeNet in train mode)
+            if isinstance(output, tuple):
+                output = output[0]
+
+            # Handle sigmoid [batch,1] output: convert to 2-class for indexing
+            if output.shape[1] == 1:
+                output = torch.cat([1 - output, output], dim=1)
+
             score = output[:, target_class].sum()
             grads = torch.autograd.grad(score, scaled)[0]
             accum_grad += grads.detach().sum(dim=0, keepdim=True)
 
-        attributions = delta * (accum_grad / steps) # Final IG formula: divide accumulated gradients by total steps to get the average gradient, then multiply by delta (the input-baseline difference). This gives the final attribution for each pixel.
-        delta_val = self._convergence_delta(attributions, input_tensor,
-                                               baseline, target_class)
+        # Final IG formula
+        attributions = delta_path * (accum_grad / steps)
+
+        delta_val = self._convergence_delta(
+            attributions, input_tensor, baseline, target_class
+        )
         return attributions.detach(), delta_val
 
-    def _convergence_delta( # this function is basically completeness check
+    def _convergence_delta(
         self,
         attributions: torch.Tensor,
         input_tensor: torch.Tensor,
         baseline: torch.Tensor,
         target_class: int,
     ) -> float:
+        """
+        Completeness check (the Completeness Axiom of IG):
+
+            |sum(attributions)  -  (F(input) - F(baseline))|
+
+        A perfect continuous integral gives 0. Our Riemann sum gives a small
+        positive error. Guidelines:
+            < 0.05  = excellent
+            < 0.15  = acceptable
+            > 0.15  = increase `steps`
+        """
         with torch.no_grad():
-            f_in = self.model(input_tensor)[0, target_class].item()
-            f_bl = self.model(baseline)[0, target_class].item()
+            out_in = self.model(input_tensor)
+            out_bl = self.model(baseline)
+
+            # Handle tuple output (InceptionV3, GoogLeNet in train mode)
+            if isinstance(out_in, tuple):
+                out_in = out_in[0]
+                out_bl = out_bl[0]
+
+            # Apply same sigmoid conversion for consistency
+            if out_in.shape[1] == 1:
+                out_in = torch.cat([1 - out_in, out_in], dim=1)
+                out_bl = torch.cat([1 - out_bl, out_bl], dim=1)
+            f_in = out_in[0, target_class].item()
+            f_bl = out_bl[0, target_class].item()
         return abs(attributions.sum().item() - (f_in - f_bl))
 
     # ------------------------------------------------------------------
-    # Attribution maps  (private)
+    # Attribution map builders  (private)
     # ------------------------------------------------------------------
 
     def _magnitude_map(self, attr: torch.Tensor) -> torch.Tensor:
-        """Sum of |attributions| across channels - overall importance."""
+        """
+        Sum of |attributions| across colour channels.
+        Result shape: [H, W]
+
+        Answers: which pixels matter at all, in any direction?
+        Red on this map = important pixel. Blue = unimportant background.
+        """
         return torch.sum(torch.abs(attr.squeeze(0)), dim=0)
-        # attr is [1, 3, H, W]. .squeeze(0) removes the batch dimension → [3, H, W]. torch.abs takes absolute value of every element. torch.sum(..., dim=0) sums across the 3 color channels → [H, W]. 
-        # Result: one importance score per pixel combining all channels
 
     def _positive_map(self, attr: torch.Tensor) -> torch.Tensor:
-        """Sum of positive attributions - what supports the prediction."""
+        """
+        Sum of only positive attributions across channels.
+        Result shape: [H, W]
+
+        Answers: which pixels PUSHED the model TOWARD this class?
+        Hot pixels on this map = "this is why the model said cat/dog/disease".
+        """
         return torch.sum(torch.clamp(attr.squeeze(0), min=0), dim=0)
 
     def _negative_map(self, attr: torch.Tensor) -> torch.Tensor:
-        """Abs sum of negative attributions - what suppresses the prediction."""
+        """
+        Absolute sum of negative attributions across channels.
+        Result shape: [H, W]
+
+        Answers: which pixels PUSHED the model AWAY from this class?
+        Useful for debugging: "what made the model doubt this prediction?"
+        We take abs so the map is positive (needed for heatmap rendering).
+        """
         return torch.abs(torch.sum(torch.clamp(attr.squeeze(0), max=0), dim=0))
 
     # ------------------------------------------------------------------
@@ -203,18 +366,47 @@ class IGImageExplainer:
     # ------------------------------------------------------------------
 
     def _to_uint8(self, attr_map: torch.Tensor, clip_pct: float = 99.0) -> np.ndarray:
-        # This function is for Normalizaing visualization
-        arr = attr_map.cpu().numpy() # moves tensor to CPU and converts to numpy array
-        upper = np.percentile(arr, clip_pct) # finds the 99th percentile value. Pixels above this are extreme outliers
+        """
+        Normalise attribution map to [0, 255] uint8 for OpenCV rendering.
+
+        Steps:
+          1. Cast to float32 (safe for numpy operations)
+          2. Clip at 99th percentile (removes extreme outlier pixels)
+          3. Shift minimum to 0
+          4. Normalise maximum to 1
+          5. Scale to [0, 255] and cast to uint8
+
+        The 99th percentile clip prevents one extremely hot pixel from
+        washing out the entire heatmap to a uniform colour.
+        """
+        arr = attr_map.cpu().numpy().astype(np.float32)
+        upper = np.percentile(arr, clip_pct)
+
+        # Guard: if all attributions are zero (e.g. no positive signal),
+        # return a black map rather than dividing by zero.
+        if upper <= 0:
+            return np.zeros(arr.shape, dtype=np.uint8)
+
         arr = np.clip(arr, 0, upper)
-        arr = arr - arr.min() # shifts minimum to 0
-        arr = arr / (arr.max() + 1e-8) # divides by maximum to get range [0, 1]. The 1e-8 prevents division by zero if the map is all zeros
-        return np.uint8(255 * arr) # scales to [0, 255] and converts to unsigned 8-bit integer
+        arr = arr - arr.min()
+        arr = arr / (arr.max() + 1e-8)
+        return np.uint8(255 * arr)
 
     def _resize(self, heatmap: np.ndarray, image: np.ndarray) -> np.ndarray:
+        """
+        Resize heatmap to match image spatial dimensions if they differ.
+
+        This is needed when the model's internal resolution differs from the
+        display image resolution (e.g. ViT with patch-level attributions,
+        or when the original BGR was not resized to the model's input size).
+        Note: cv2.resize takes (width, height), opposite of numpy (height, width).
+        """
         if heatmap.shape[:2] != image.shape[:2]:
-            heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]),
-                                 interpolation=cv2.INTER_LINEAR)
+            heatmap = cv2.resize(
+                heatmap,
+                (image.shape[1], image.shape[0]),   # (width, height) for cv2
+                interpolation=cv2.INTER_LINEAR,
+            )
         return heatmap
 
     def _heatmap_overlay(
@@ -224,10 +416,20 @@ class IGImageExplainer:
         alpha: float,
         colormap: int,
     ) -> np.ndarray:
+        """
+        Blend a colourised attribution heatmap over the original image.
+
+        Pipeline:
+            attribution map [H,W] float
+            → _to_uint8: normalise to [0,255] grayscale
+            → _resize: match image spatial dims
+            → cv2.applyColorMap: grayscale → 3-channel colour (JET/HOT/WINTER)
+            → cv2.addWeighted: blend with original image at alpha strength
+        """
         heatmap = self._to_uint8(attr_map)
         heatmap = self._resize(heatmap, image)
-        colored = cv2.applyColorMap(heatmap, colormap) # cv2.applyColorMap converts the grayscale [0-255] heatmap into a color image using the specified colormap - JET gives the classic rainbow. 
-        return cv2.addWeighted(image, 1 - alpha, colored, alpha, 0) # cv2.addWeighted blends two images: image × (1-alpha) + colored × alpha. At alpha=0.5 you see 50% original image and 50% heatmap color.
+        colored = cv2.applyColorMap(heatmap, colormap)
+        return cv2.addWeighted(image, 1 - alpha, colored, alpha, 0)
 
     def _contour_overlay(
         self,
@@ -237,21 +439,39 @@ class IGImageExplainer:
         color: tuple = (0, 255, 0),
         thickness: int = 2,
     ) -> np.ndarray:
+        """
+        Draw green contours around the most important image regions.
+
+        Pipeline:
+            attribution map
+            → _to_uint8: normalise
+            → _resize: match image dims
+            → GaussianBlur(25,25): smooth out pixel-level IG noise so contours
+              outline regions, not individual speckled pixels
+            → threshold at 90th percentile: keep only top 10% important pixels
+            → findContours: detect connected important regions
+            → filter by area (> 0.5% of image): remove tiny noise fragments
+            → drawContours on image copy
+
+        If the entire map is zero (no attributions), returns image unchanged.
+        """
         heatmap = self._to_uint8(attr_map)
         heatmap = self._resize(heatmap, image)
-
-        # Smooth before thresholding - removes pixel-level IG noise so
-        # contours outline regions rather than individual noisy pixels
         heatmap = cv2.GaussianBlur(heatmap, (25, 25), 0)
 
         threshold = int(np.percentile(heatmap, threshold_pct))
-        _, binary = cv2.threshold(heatmap, threshold, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
-                                        cv2.CHAIN_APPROX_SIMPLE)
 
-        # Only draw the largest contours - skip tiny noisy fragments
+        # Guard: all-zero map (no attributions found)
+        if threshold == 0:
+            return image.copy()
+
+        _, binary = cv2.threshold(heatmap, threshold, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
         if contours:
-            min_area = image.shape[0] * image.shape[1] * 0.005  # 0.5% of image
+            min_area = image.shape[0] * image.shape[1] * 0.005
             contours = [c for c in contours if cv2.contourArea(c) > min_area]
 
         overlay = image.copy()
