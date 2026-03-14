@@ -1,4 +1,3 @@
-#explainers/dff.py
 import cv2
 import numpy as np
 import torch
@@ -6,6 +5,7 @@ from pathlib import Path
 from pytorch_grad_cam import DeepFeatureFactorization
 from pytorch_grad_cam.utils.image import show_factorization_on_image
 from EXACT.utils import get_last_conv_layer
+
 
 class DFF:
     """
@@ -41,10 +41,20 @@ class DFF:
         Directory to save output visualizations. Default is 'user_saves/dff_saves'.
     """
 
-    def __init__(self, model, target_layer=None, computation_on_concepts=None, n_components=5, save_dir="user_saves/dff_saves",):
+    def __init__(
+        self,
+        model,
+        target_layer=None,
+        computation_on_concepts=None,
+        n_components=5,
+        save_dir="user_saves/dff_saves",
+    ):
         self.model = model
         self.model.eval()
-        self.target_layer = target_layer or get_last_conv_layer(model)
+        _layer = target_layer or get_last_conv_layer(model)
+        # DeepFeatureFactorization expects a single layer, not a list.
+        # get_last_conv_layer returns a list, so unwrap it if needed.
+        self.target_layer = _layer[0] if isinstance(_layer, list) else _layer
         self.computation_on_concepts = computation_on_concepts
         self.n_components = n_components
         self.save_dir = Path(save_dir)
@@ -56,7 +66,17 @@ class DFF:
             computation_on_concepts=self.computation_on_concepts,
         )
 
-    def explain(self, input_tensor, input_image=None, n_components=None, class_names=None, top_k=2, image_weight=0.3, save_png=False, tag=""):
+    def explain(
+        self,
+        input_tensor,
+        input_image=None,
+        n_components=None,
+        class_names=None,
+        top_k=2,
+        image_weight=0.3,
+        save_png=False,
+        tag="",
+    ):
         """
         Discover and visualize the visual concepts in an image.
 
@@ -100,7 +120,12 @@ class DFF:
         """
         n = n_components or self.n_components
 
-        concepts, batch_explanations, concept_scores = self._dff(input_tensor, n)
+        dff_output = self._dff(input_tensor, n)
+        if len(dff_output) == 3:
+            concepts, batch_explanations, concept_scores = dff_output
+        else:
+            concepts, batch_explanations = dff_output
+            concept_scores = None
         concept_heatmaps = batch_explanations[0]  # shape: (n_components, H, W)
 
         # Build concept labels if we have class scores and class names
@@ -119,9 +144,16 @@ class DFF:
             input_image = input_image / 255.0
         input_image = np.float32(input_image)
 
+        # Resize each concept heatmap to match the input image spatial dimensions
+        img_h, img_w = input_image.shape[:2]
+        resized_heatmaps = np.stack([
+            cv2.resize(concept_heatmaps[i], (img_w, img_h))
+            for i in range(concept_heatmaps.shape[0])
+        ])
+
         visualization = show_factorization_on_image(
             input_image,
-            concept_heatmaps,
+            resized_heatmaps,
             image_weight=image_weight,
             concept_labels=concept_labels,
         )
