@@ -176,6 +176,10 @@ class ViTGradCAM:
             input_image = input_image / 255.0
         input_image = np.float32(input_image)
 
+        if input_image.min() < 0.0:
+            input_image = (input_image - input_image.min()) / (input_image.max() - input_image.min() + 1e-8)
+        input_image = np.clip(input_image, 0.0, 1.0)
+
         # Resize CAM to match image if needed
         h, w = input_image.shape[:2]
         if cam.shape != (h, w):
@@ -191,7 +195,7 @@ class ViTGradCAM:
             print(f"✓ Saved: {filepath}")
 
         return {
-            "cam": cam,
+            "heatmap": cam,
             "visualization": visualization,
             "filepath": filepath,
             "method": method,

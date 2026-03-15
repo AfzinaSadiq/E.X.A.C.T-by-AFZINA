@@ -144,6 +144,10 @@ class DFF:
             input_image = input_image / 255.0
         input_image = np.float32(input_image)
 
+        if input_image.min() < 0.0:
+            input_image = (input_image - input_image.min()) / (input_image.max() - input_image.min() + 1e-8)
+        input_image = np.clip(input_image, 0.0, 1.0)
+
         # Resize each concept heatmap to match the input image spatial dimensions
         img_h, img_w = input_image.shape[:2]
         resized_heatmaps = np.stack([
@@ -166,6 +170,7 @@ class DFF:
             print(f"Saved: {filepath}")
 
         return {
+            "heatmap": np.mean(concept_heatmaps, axis=0),
             "visualization": visualization,
             "concept_heatmaps": concept_heatmaps,
             "concept_scores": concept_scores,

@@ -48,7 +48,7 @@ Each value in `entries` is a 3-tuple:
 
     (result_dict, explainer_object, extra_kwargs)
 
-  result_dict      – dict returned by explainer.explain(). Must contain 'cam'.
+  result_dict      – dict returned by explainer.explain(). Must contain 'heatmap'.
   explainer_object – the explainer instance; must expose
                      .explain(input_tensor, **extra_kwargs).
                      Pass None to skip stability for that method.
@@ -222,17 +222,49 @@ class _Metrics:
         """
         Re-run the explainer on `runs` noisy inputs; measure mean pixel deviation
         from the reference heatmap. Returns (1 - mean_deviation), higher = more stable.
+
+        Memory note
+        -----------
+        Gradient-heavy explainers (e.g. Integrated Gradients) can accumulate
+        significant GPU/CPU memory across runs. We therefore:
+          - cap IG steps at 20 for stability reruns via the 'steps' extra_kwarg
+            override (full accuracy is not needed here, just directional signal)
+          - explicitly free the result dict and flush the CUDA cache after each run
         """
         h, w = cam_ref.shape
         devs = []
+
+        # For IG explainers: override steps to a lightweight value for reruns.
+        # This prevents the 10 x N_steps forward+backward passes from consuming
+        # all available memory. Users can override by setting 'steps' in extra_kwargs.
+        is_ig = hasattr(explainer_obj, "_compute_attributions")  # IG-specific method
+        stability_kwargs = dict(extra_kwargs)
+        if is_ig and "steps" not in stability_kwargs:
+            stability_kwargs["steps"] = 20   # fast enough for deviation measurement
+
         for _ in range(runs):
             noisy = (input_tensor + torch.randn_like(input_tensor) * noise_std).clamp(0, 1)
+            result = None
             try:
-                result    = explainer_obj.explain(noisy, **extra_kwargs)
-                cam_noisy = _normalize(_resize_to(_to_numpy_hw(result["cam"]), h, w))
+                result = explainer_obj.explain(noisy, **stability_kwargs)
+                # Accept 'heatmap' (canonical) or legacy 'cam' key
+                raw = result.get("heatmap") if "heatmap" in result else result.get("cam")
+                if raw is None:
+                    raise KeyError(
+                        f"explain() result has no 'heatmap' or 'cam' key. "
+                        f"Found: {list(result.keys())}"
+                    )
+                cam_noisy = _normalize(_resize_to(_to_numpy_hw(raw), h, w))
                 devs.append(float(np.mean(np.abs(cam_noisy - cam_ref))))
             except Exception as exc:
                 warnings.warn(f"Stability run failed: {exc}")
+            finally:
+                # Explicitly release result dict and flush CUDA cache every run
+                # to prevent gradient-heavy explainers from accumulating memory.
+                del result
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
         return round(float(1.0 - np.mean(devs)) if devs else 0.0, 6)
 
     # ── Localization ──────────────────────────────────────────────────────
@@ -268,6 +300,13 @@ class HeatmapComparator:
         AUC curve resolution. Default 10. Raise to 20 for smoother curves.
     faithfulness_enabled : bool
         Set False to skip Deletion/Insertion AUC (faster for large models).
+    stability_enabled : bool
+        Set False to skip stability checks entirely for all methods.
+        Recommended when using explainers that are themselves expensive
+        (e.g. LIME with num_samples=1000), since stability reruns multiply
+        that cost by stability_runs. You can also skip stability per-method
+        by passing None as the explainer object in the entry tuple.
+        Default True.
     save_dir : str
         Directory for saved plots. Default 'user_saves/comparator_saves'.
     """
@@ -278,6 +317,7 @@ class HeatmapComparator:
         device: str = "cpu",
         deletion_steps: int = 10,
         faithfulness_enabled: bool = True,
+        stability_enabled: bool = True,
         save_dir: str = "user_saves/comparator_saves",
     ):
         self.model                = model
@@ -285,6 +325,7 @@ class HeatmapComparator:
         self.device               = device
         self.deletion_steps       = deletion_steps
         self.faithfulness_enabled = faithfulness_enabled
+        self.stability_enabled    = stability_enabled
         self.save_dir             = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self._m                   = _Metrics()
@@ -311,7 +352,7 @@ class HeatmapComparator:
         entries : dict[str, tuple]
             {display_name: (result_dict, explainer_object, extra_kwargs)}
 
-            result_dict      – output of explainer.explain(); must have 'cam'.
+            result_dict      – output of explainer.explain(); must have 'heatmap'.
             explainer_object – the explainer instance used to get that result;
                                must have .explain(input_tensor, **extra_kwargs).
                                Pass None to skip stability for this method.
@@ -354,9 +395,18 @@ class HeatmapComparator:
                     f"(result_dict, explainer_object, extra_kwargs). Got {len(entry)} elements."
                 )
             result, explainer, extra = entry
-            if "cam" not in result:
+
+            # 'heatmap' is the canonical EXACT key for all explainers.
+            # 'cam' is accepted as a backward-compatible alias (older GradCAM usage).
+            # Everything is normalised to 'heatmap' internally from here on.
+            if "heatmap" not in result and "cam" in result:
+                result = {**result, "heatmap": result["cam"]}
+            elif "heatmap" not in result:
                 raise KeyError(
-                    f"result_dict for '{name}' has no 'cam' key. "
+                    f"result_dict for '{name}' has no 'heatmap' key. "
+                    f"All explainer result dicts must return a 'heatmap' key "
+                    f"containing a 2-D (H, W) float32 numpy array. "
+                    f"The legacy 'cam' key is also accepted for backward compatibility. "
                     f"Found keys: {list(result.keys())}"
                 )
             results_map[name]   = result
@@ -387,7 +437,7 @@ class HeatmapComparator:
         # These two spaces can differ (e.g. 550x550 display image vs 224x224 tensor),
         # which is the root cause of the shape mismatch bug this design prevents.
         cams: dict[str, np.ndarray] = {
-            name: _normalize(_resize_to(_to_numpy_hw(r["cam"]), h, w))
+            name: _normalize(_resize_to(_to_numpy_hw(r["heatmap"]), h, w))
             for name, r in results_map.items()
         }
 
@@ -399,7 +449,7 @@ class HeatmapComparator:
         metrics_used: list[str] = []
 
         # ════════════════════════════════════════════════════════════════
-        # 1 · FAITHFULNESS
+        # 1. FAITHFULNESS
         # ════════════════════════════════════════════════════════════════
         if self.faithfulness_enabled:
             print("  [1/4] Computing faithfulness (Deletion & Insertion AUC)...")
@@ -414,7 +464,7 @@ class HeatmapComparator:
             print("  [1/4] Faithfulness skipped (faithfulness_enabled=False).")
 
         # ════════════════════════════════════════════════════════════════
-        # 2 · SHARPNESS
+        # 2. SHARPNESS
         # ════════════════════════════════════════════════════════════════
         print("  [2/4] Computing sharpness (Sparsity + Concentration)...")
         for name, cam in cams.items():
@@ -423,38 +473,42 @@ class HeatmapComparator:
         metrics_used += ["sparsity", "concentration"]
 
         # ════════════════════════════════════════════════════════════════
-        # 3 · STABILITY
+        # 3. STABILITY
         # ════════════════════════════════════════════════════════════════
-        has_explainers = any(v is not None for v in explainer_map.values())
-        if has_explainers:
-            print(f"  [3/4] Computing stability ({stability_runs} noisy runs per method)...")
-            for name, cam in cams.items():
-                exp = explainer_map[name]
-                if exp is None:
-                    warnings.warn(
-                        f"  ⚠  No explainer object for '{name}' — "
-                        f"stability skipped for this method."
-                    )
-                    continue
-                scores[name]["stability"] = self._m.stability(
-                    explainer_obj=exp,
-                    extra_kwargs=kwargs_map[name],
-                    input_tensor=input_tensor,
-                    cam_ref=cam,
-                    runs=stability_runs,
-                    noise_std=noise_std,
-                )
-            if any("stability" in scores[n] for n in cams):
-                metrics_used.append("stability")
-        else:
+        if not self.stability_enabled:
             print(
-                "  [3/4] Stability skipped.\n"
-                "         To enable: pass the explainer instance as the 2nd element\n"
-                "         of each entry tuple, e.g. (result, gradcam_exp, {'method':'gradcam'})."
+                "  [3/4] Stability skipped (stability_enabled=False)."
+                "         Tip: disable per-method by passing None as the explainer"
+                "         object, e.g. (result, None, {}) to skip just that method."
             )
+        else:
+            has_explainers = any(v is not None for v in explainer_map.values())
+            if has_explainers:
+                print(f"  [3/4] Computing stability ({stability_runs} noisy runs per method)...")
+                for name, cam in cams.items():
+                    exp = explainer_map[name]
+                    if exp is None:
+                        print(f"         Stability skipped for '{name}' (explainer=None).")
+                        continue
+                    scores[name]["stability"] = self._m.stability(
+                        explainer_obj=exp,
+                        extra_kwargs=kwargs_map[name],
+                        input_tensor=input_tensor,
+                        cam_ref=cam,
+                        runs=stability_runs,
+                        noise_std=noise_std,
+                    )
+                if any("stability" in scores[n] for n in cams):
+                    metrics_used.append("stability")
+            else:
+                print(
+                    "  [3/4] Stability skipped."
+                    "         To enable: pass the explainer instance as the 2nd element"
+                    "         of each entry tuple, e.g. (result, gradcam_exp, {'method':'gradcam'})."
+                )
 
         # ════════════════════════════════════════════════════════════════
-        # 4 · LOCALIZATION
+        # 4. LOCALIZATION
         # ════════════════════════════════════════════════════════════════
         if gt_mask is not None:
             print("  [4/4] Computing localization (IoU + Pointing Game)...")
@@ -542,14 +596,14 @@ class HeatmapComparator:
         print(comp_row)
         print("═" * width)
 
-        print("\n  📊 RANKED SUMMARY  (all metrics ↑  higher = better)")
+        print("\n  RANKED SUMMARY  (all metrics, higher = better)")
         print("  " + "─" * 44)
-        medals = ["🥇", "🥈", "🥉"] + ["  "] * 20
+        medals = ["[1]", "[2]", "[3]"] + ["   "] * 20
         for i, (name, score) in enumerate(ranked):
             bar = "█" * int(score * 30) + "░" * (30 - int(score * 30))
             print(f"  {medals[i]}  #{i+1}  {name:<24} {score:.4f}  {bar}")
 
-        print(f"\n  🏆 Winner  : {winner}")
+        print(f"\n  [WINNER] : {winner}")
         print(f"  Weights   : { {k: round(v, 2) for k, v in weights.items()} }\n")
 
     # ──────────────────────────────────────────────────────────────────────
@@ -566,10 +620,10 @@ class HeatmapComparator:
         """
         Render a 4-panel visual comparison report and optionally save it.
 
-          ① Side-by-side heatmap overlays
-          ② Colour-coded numeric score table
-          ③ Horizontal bar chart of composite scores
-          ④ Radar chart of per-metric profiles
+          [1] Side-by-side heatmap overlays
+          [2] Colour-coded numeric score table
+          [3] Horizontal bar chart of composite scores
+          [4] Radar chart of per-metric profiles
 
         Parameters
         ----------
@@ -604,7 +658,7 @@ class HeatmapComparator:
         GOLD          = "#F7C948"
 
         fig = plt.figure(figsize=(max(18, 5 + 3 * n_m) * s, 22 * s), facecolor=BG)
-        fig.suptitle("EXACT  ·  Heatmap Comparison Report",
+        fig.suptitle("EXACT -- Heatmap Comparison Report",
                      color=TEXT, fontsize=18*s, fontweight="bold",
                      fontfamily="monospace", y=0.98)
 
@@ -612,19 +666,19 @@ class HeatmapComparator:
                                   top=0.95, bottom=0.04, left=0.05, right=0.97,
                                   height_ratios=[2.5, 2.0, 1.5, 1.5])
 
-        # ① heatmap grid ──────────────────────────────────────────────────
+        # [1] heatmap grid ──────────────────────────────────────────────────
         gs1 = gridspec.GridSpecFromSubplotSpec(1, n_m+1, subplot_spec=outer[0], wspace=0.06)
         ax  = fig.add_subplot(gs1[0])
         ax.imshow(img); ax.set_title("Original", color=TEXT, fontsize=9*s, fontweight="bold", pad=6); ax.axis("off")
         for i, method in enumerate(methods):
             ax = fig.add_subplot(gs1[i+1])
             ax.imshow(_overlay(img, cams[method]))
-            ax.set_title(method + ("  🏆" if method == winner else ""),
+            ax.set_title(method + ("  [W]" if method == winner else ""),
                          color=method_colors[method], fontsize=9*s, fontweight="bold", pad=6)
             ax.axis("off")
-        _panel_label(fig, outer[0], "① Heatmap Overlay", SUB, s)
+        _panel_label(fig, outer[0], "[1] Heatmap Overlay", SUB, s)
 
-        # ② score table ───────────────────────────────────────────────────
+        # [2] score table ───────────────────────────────────────────────────
         ax_tbl = fig.add_subplot(outer[1])
         ax_tbl.set_facecolor(CARD); ax_tbl.axis("off")
         cell_texts, cell_colors = [], []
@@ -658,9 +712,9 @@ class HeatmapComparator:
             cell.set_text_props(color=TEXT if r > 0 else GOLD,
                                 fontweight="bold" if r == 0 else "normal",
                                 fontfamily="monospace")
-        _panel_label(fig, outer[1], "② Per-metric Score Table  (green = best · red = worst per row)", SUB, s)
+        _panel_label(fig, outer[1], "[2] Per-metric Score Table  (green = best, red = worst per row)", SUB, s)
 
-        # ③ bar chart ─────────────────────────────────────────────────────
+        # [3] bar chart ─────────────────────────────────────────────────────
         ax_bar = fig.add_subplot(outer[2])
         ax_bar.set_facecolor(CARD)
         ax_bar.spines[["top","right","left","bottom"]].set_color("#30363D")
@@ -675,16 +729,16 @@ class HeatmapComparator:
         ax_bar.set_xlabel("Composite Score  (higher = better)", color=SUB, fontsize=8*s)
         ax_bar.tick_params(axis="y", labelcolor=TEXT, labelsize=9*s)
         ax_bar.tick_params(axis="x", labelcolor=SUB, labelsize=8*s)
-        ax_bar.set_title(f"🏆  Winner: {winner}", color=GOLD, fontsize=10*s, fontweight="bold", pad=8)
-        _panel_label(fig, outer[2], "③ Composite Score Ranking", SUB, s)
+        ax_bar.set_title(f"[WINNER]  {winner}", color=GOLD, fontsize=10*s, fontweight="bold", pad=8)
+        _panel_label(fig, outer[2], "[3] Composite Score Ranking", SUB, s)
 
-        # ④ radar chart ───────────────────────────────────────────────────
+        # [4] radar chart ───────────────────────────────────────────────────
         ax_host = fig.add_subplot(outer[3]); ax_host.axis("off")
         if len(metrics) >= 3:
             ax_r = fig.add_subplot(
                 gridspec.GridSpecFromSubplotSpec(1,1,subplot_spec=outer[3])[0], polar=True)
             _draw_radar(ax_r, methods, metrics, scores, method_colors, TEXT, SUB, CARD, s)
-            _panel_label(fig, outer[3], "④ Radar Chart  (per-metric profile)", SUB, s)
+            _panel_label(fig, outer[3], "[4] Radar Chart  (per-metric profile)", SUB, s)
         else:
             ax_host.text(0.5, 0.5, "Radar chart requires ≥ 3 metrics",
                          ha="center", va="center", color=SUB,
