@@ -5,25 +5,29 @@ import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
 
-# Import your explainer
+# Import EXACT LIME explainer
 from EXACT.explainers.lime_image_explainer import LimeExplainer_Image
 
-# -----------------------------
+
+# -------------------------------------------------
 # Load Pretrained ResNet50
-# -----------------------------
+# -------------------------------------------------
+
 weights = ResNet50_Weights.IMAGENET1K_V1
 model = models.resnet50(weights=weights)
+
 model.eval()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
-# ImageNet class labels
 imagenet_classes = weights.meta["categories"]
 
-# -----------------------------
-# Transform for prediction
-# -----------------------------
+
+# -------------------------------------------------
+# ImageNet Transform (for prediction check)
+# -------------------------------------------------
+
 transform = transforms.Compose([
     transforms.Resize((224,224)),
     transforms.ToTensor(),
@@ -33,18 +37,21 @@ transform = transforms.Compose([
     )
 ])
 
-# -----------------------------
-# Load image
-# -----------------------------
-img_path = "sample_cat.jpg"   # change this to your test image
+
+# -------------------------------------------------
+# Load Image
+# -------------------------------------------------
+
+img_path = "sample_dog.jpg"   # change if needed
 image = Image.open(img_path).convert("RGB")
 
-# numpy version for LIME
 image_np = np.array(image)
 
-# -----------------------------
+
+# -------------------------------------------------
 # Model Prediction
-# -----------------------------
+# -------------------------------------------------
+
 input_tensor = transform(image).unsqueeze(0).to(device)
 
 with torch.no_grad():
@@ -62,32 +69,38 @@ print("---------------------")
 print("Predicted Class :", predicted_label)
 print("Confidence      :", round(confidence * 100, 2), "%")
 
-# -----------------------------
+
+# -------------------------------------------------
 # Initialize LIME Explainer
-# -----------------------------
+# -------------------------------------------------
+
 explainer = LimeExplainer_Image(
     model=model,
     num_samples=1000,
-    target_size=(224,224)
+    target_size=(224,224),
+    smoothing_sigma=2
 )
 
-# -----------------------------
-# Generate LIME explanation
-# -----------------------------
+
+# -------------------------------------------------
+# Generate Explanation
+# -------------------------------------------------
+
+print("\nGenerating LIME explanation (heatmap + boundary)...")
+
 explanation = explainer.explain(
     image=image_np,
-    top_labels=1
+    top_labels=1,
+    boundary_marking=True   # <-- enables boundary visualization
 )
 
-# -----------------------------
-# Show side-by-side visualization
-# -----------------------------
-explainer.overlay_heatmap(
-    explanation=explanation,
-    original_image=image_np,   # <-- this creates side-by-side view
-    positive_only=True,
-    num_features=5,
-    hide_rest=False,
-    title=f"LIME Explanation ({predicted_label})",
-    save_png=True
-)
+
+# -------------------------------------------------
+# Verify Explanation Object
+# -------------------------------------------------
+
+print("\nExplanation generated successfully.")
+
+print("Top predicted label index:", explanation.top_labels[0])
+
+print("Outputs saved inside folder: user_saves/")
