@@ -6,218 +6,191 @@ import torch
 from EXACT.utils import predict_proba_fn
 from PIL import Image
 import os
+import time
+from scipy.ndimage import gaussian_filter
+
 
 class LimeExplainer_Image:
-    """
-    LIME Image Explainer for Exact Library 
-    Main responsibilities:
-        - Generate LIME explanations
-        - Return raw visualization data (image + mask)
-        - Provide optional plotting utilites for  users
-    """
 
-    def __init__(self, model, num_samples = 1000, target_size = (128,128)):
+    def __init__(self, model, num_samples=1000, target_size=(224,224), smoothing_sigma=2, random_state = 42):
+
         self.model = model
-        self.num_samples = num_samples # Number of perturbed samples LIME generates, More samples = better explanation but slower
+        self.num_samples = num_samples
         self.target_size = target_size
+        self.smoothing_sigma = smoothing_sigma
+        self.random_state = random_state
+
         self.explainer = lime_image.LimeImageExplainer()
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # --------------------------------------------------
+    # Image loader
+    # --------------------------------------------------
+
     @staticmethod
-    def _preprocess_image(image,target_size):
-        """
-        Preprocess image: Covert to PIL, resize and normalize
+    def _load_image(image):
 
-        Args: 
-            image: PIL image, numpy array or file path (str)
-            target_size: Tuple (height, width) to resize to
-
-        Returns: 
-            numpy array: Normalized image in range [0, 1] with shape (H, W, C)
-        """
-
-        # Load image if it's  a file path
         if isinstance(image, str):
             image = Image.open(image).convert("RGB")
-        
-        # Convert numpy array to PIL image if needed
+
         if isinstance(image, np.ndarray):
+
             if image.dtype != np.uint8:
                 image = (image * 255).astype(np.uint8)
-            image = Image.fromarray(image)
-        
-        # Resize to target size
-        image = image.resize(target_size)
 
-        # Convert to numpy array and normalize to [0, 1]
-        img_array = np.array(image,dtype=np.float32) / 255.0
+            image = Image.fromarray(image)
+
+        return image
+
+    # --------------------------------------------------
+    # Resize image for LIME
+    # --------------------------------------------------
+
+    def _resize_for_model(self, image):
+
+        resized = image.resize(self.target_size)
+
+        img_array = np.array(resized, dtype=np.float32) / 255.0
 
         return img_array
 
-    # Core explanation logic
-    def explain(self, image, top_labels = 1, preprocess = True):
-        """
-        Generate a LIME explanation for a single image.
+    # --------------------------------------------------
+    # Generate heatmap
+    # --------------------------------------------------
 
-        Parameters
-        ----------
-        image : np.ndarray
-            Input image in (H, W, C) format
-        top_labels :int
-            Number of top predicted classes to explain
+    def _generate_heatmap(self, explanation, label=None):
 
-        Returns
-        -------
-        explanation: lime.explanation.Explanation
-            LIME explanation object
+        if label is None:
+            label = explanation.top_labels[0]
 
-        """
+        segments = explanation.segments
+        weights = dict(explanation.local_exp[label])
 
-        # Preprocess image
-        if preprocess:
-            image = self._preprocess_image(image, self.target_size)
+        heatmap = np.zeros(segments.shape)
 
-        def predict_fn(images):
-            # Lime gives a list of images -> convert to numpy
-            images = np.array(images)
-            return predict_proba_fn.predict_proba(images,model=self.model)
-        
-        explanation = self.explainer.explain_instance(
-            image = image,
-            classifier_fn = predict_fn,
-            top_labels = top_labels,
-            hide_color=0,
-            num_samples=self.num_samples
-        )
+        for superpixel, weight in weights.items():
+            heatmap[segments == superpixel] = weight
 
-        return explanation
-    
-    # RAW visualization data (NO plotting)
-    def get_visualization_data(self, explanation, label = None, positive_only=True, num_features = 3, hide_rest=True):
-        """
-        Extract visualization data (image + mask) from LIME explanation.
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
-        Parameters
-        ----------
-        explanation : lime.explanation.Explanation
-            Lime explanation object
-        label : int, optional
-            Class label to visualize (defaults to top predicted label)
-        positive_only: bool
-            Show only positive contributing regions
-        num_features: int
-            Number of superpixels to displa y
-        hide_rest : bool
-            Hide non-important  regions
+        heatmap = gaussian_filter(heatmap, sigma=self.smoothing_sigma)
 
-        Returns
-        --------
-        lime_image : np.ndarray
-            Image with important region retained
-        mask : np.ndarray
-            Binary mask indicating important superpixels
-        
-        """
+        return heatmap
+
+    # --------------------------------------------------
+    # Overlay heatmap
+    # --------------------------------------------------
+
+    def _overlay_heatmap(self, image, heatmap, alpha=0.5):
+
+        heatmap_color = plt.cm.jet(heatmap)[:, :, :3]
+
+        overlay = image * (1 - alpha) + heatmap_color * alpha
+
+        overlay = np.clip(overlay, 0, 1)
+
+        return overlay
+
+    # --------------------------------------------------
+    # Boundary visualization
+    # --------------------------------------------------
+
+    def _generate_boundary_visualization(self, explanation, label=None,
+                                         positive_only=True,
+                                         num_features=5,
+                                         hide_rest=False):
 
         if label is None:
             label = explanation.top_labels[0]
 
         lime_image, mask = explanation.get_image_and_mask(
-            label = label,
-            positive_only = positive_only,
-            num_features = num_features, # How many features we should show
-            hide_rest = hide_rest # Hide irrelevant regions
+            label=label,
+            positive_only=positive_only,
+            num_features=num_features,
+            hide_rest=hide_rest
         )
 
-        
-        return lime_image, mask # We return Lime image + mask without plotting
-    
-    # Ploting utility (Optional for users)
-    def overlay_heatmap(self, explanation, original_image = None, label = None, positive_only = False, num_features = 3, hide_rest = False, figsize=(8,4), title = "LIME Explanation", show = True, save_png = None):
-        """
-        Plot and optionally save the LIME image explanation.
+        boundary_image = mark_boundaries(lime_image, mask)
 
-        Parameters
-        ----------
-        explanation : lime.explanation.Explanation
-            LIME explanation object
-        
-        original_image : np.ndarray or PIL.Image, optional
-            Original image for side by side comparison
-        
-        label: int, optional
-            Class label to visualize
-        
-        positive_only : bool
-            Show only positive contributions
+        return boundary_image
 
-        num_features : int
-            Number of superpixels to display
+    # --------------------------------------------------
+    # MAIN EXPLAIN FUNCTION
+    # --------------------------------------------------
 
-        hide_rest : bool
-            Hide non-important regions
+    def explain(self, image, top_labels=1, boundary_marking=False):
 
-        figsize : tuple
-            Figure size
+        # Load original image
+        original_image_pil = self._load_image(image)
 
-        title : str
-            Plot title
+        original_size = original_image_pil.size
 
-        show : bool
-            Whether to display the plot
+        original_image_np = np.array(original_image_pil) / 255.0
 
-        save_path : str, optional
-            Path to save the plotted image
+        # Resize for model
+        lime_input_image = self._resize_for_model(original_image_pil)
 
-        Returns
-        -------
-        overlay_image : np.ndarray
-            LIME visualization image with boundaries
-        
-        """   
+        # Prediction function
+        def predict_fn(images):
 
-        lime_image, mask = self.get_visualization_data(
-            explanation = explanation,
-            label = label,
-            positive_only = positive_only,
-            num_features = num_features,
-            hide_rest = hide_rest
+            images = np.array(images)
+
+            return predict_proba_fn.predict_proba(images, model=self.model)
+
+        np.random.seed(self.random_state)
+        torch.manual_seed(self.random_state)
+        # Generate explanation
+        explanation = self.explainer.explain_instance(
+            image=lime_input_image,
+            classifier_fn=predict_fn,
+            top_labels=top_labels,
+            hide_color=0,
+            num_samples=self.num_samples
         )
 
-        overlay_image = mark_boundaries(lime_image, mask)
+        # --------------------------------------------------
+        # Heatmap generation (ALWAYS)
+        # --------------------------------------------------
 
-        plt.figure(figsize = figsize)
+        heatmap = self._generate_heatmap(explanation)
 
-        if original_image is not None:
-            original_image = self._preprocess_image(original_image,self.target_size)
-            plt.subplot(1,2,1)
-            plt.imshow(original_image)
-            plt.title("Original Image")
-            plt.axis("off")
+        heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8))
 
-            plt.subplot(1,2,2)
-            plt.imshow(overlay_image)
-            plt.title(title)
-            plt.axis("off")
-        else:
-            plt.imshow(overlay_image)
-            plt.title(title)
-            plt.axis("off")
+        heatmap_resized = heatmap_pil.resize(original_size, Image.BILINEAR)
 
-        if save_png:
-            save_dir = "user_saves"
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, "lime_image_explanation_2.0.png")
+        heatmap_resized = np.array(heatmap_resized) / 255.0
 
-            # Convert visualization to uint8 and save
-            vizualization_uint8 = (overlay_image * 255).astype(np.uint8)
-            Image.fromarray(vizualization_uint8).save(save_path)
-            print(f"LIME visualization saved to {save_path}")
-        
-        if show:
-            plt.show()
-        else:
-            plt.close()
+        overlay = self._overlay_heatmap(original_image_np, heatmap_resized)
 
-        
-        return overlay_image
+        # Save heatmap
+        save_dir = "user_saves"
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = int(time.time())
+
+        heatmap_path = os.path.join(save_dir, f"lime_heatmap_{timestamp}.png")
+
+        overlay_uint8 = (overlay * 255).astype(np.uint8)
+
+        Image.fromarray(overlay_uint8).save(heatmap_path)
+
+        print(f"LIME heatmap saved to {heatmap_path}")
+
+        # --------------------------------------------------
+        # Boundary visualization (OPTIONAL)
+        # --------------------------------------------------
+
+        if boundary_marking:
+
+            boundary_image = self._generate_boundary_visualization(explanation)
+
+            boundary_image_uint8 = (boundary_image * 255).astype(np.uint8)
+
+            boundary_path = os.path.join(save_dir, f"lime_boundary_{timestamp}.png")
+
+            Image.fromarray(boundary_image_uint8).save(boundary_path)
+
+            print(f"LIME boundary explanation saved to {boundary_path}")
+
+        return explanation
