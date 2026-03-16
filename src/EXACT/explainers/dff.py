@@ -51,7 +51,10 @@ class DFF:
     ):
         self.model = model
         self.model.eval()
-        self.target_layer = target_layer or get_last_conv_layer(model)
+        _layer = target_layer or get_last_conv_layer(model)
+        # DeepFeatureFactorization expects a single layer, not a list.
+        # get_last_conv_layer returns a list, so unwrap it if needed.
+        self.target_layer = _layer[0] if isinstance(_layer, list) else _layer
         self.computation_on_concepts = computation_on_concepts
         self.n_components = n_components
         self.save_dir = Path(save_dir)
@@ -117,7 +120,12 @@ class DFF:
         """
         n = n_components or self.n_components
 
-        concepts, batch_explanations, concept_scores = self._dff(input_tensor, n)
+        dff_output = self._dff(input_tensor, n)
+        if len(dff_output) == 3:
+            concepts, batch_explanations, concept_scores = dff_output
+        else:
+            concepts, batch_explanations = dff_output
+            concept_scores = None
         concept_heatmaps = batch_explanations[0]  # shape: (n_components, H, W)
 
         # Build concept labels if we have class scores and class names
@@ -136,9 +144,20 @@ class DFF:
             input_image = input_image / 255.0
         input_image = np.float32(input_image)
 
+        if input_image.min() < 0.0:
+            input_image = (input_image - input_image.min()) / (input_image.max() - input_image.min() + 1e-8)
+        input_image = np.clip(input_image, 0.0, 1.0)
+
+        # Resize each concept heatmap to match the input image spatial dimensions
+        img_h, img_w = input_image.shape[:2]
+        resized_heatmaps = np.stack([
+            cv2.resize(concept_heatmaps[i], (img_w, img_h))
+            for i in range(concept_heatmaps.shape[0])
+        ])
+
         visualization = show_factorization_on_image(
             input_image,
-            concept_heatmaps,
+            resized_heatmaps,
             image_weight=image_weight,
             concept_labels=concept_labels,
         )
@@ -151,6 +170,7 @@ class DFF:
             print(f"Saved: {filepath}")
 
         return {
+            "heatmap": np.mean(concept_heatmaps, axis=0),
             "visualization": visualization,
             "concept_heatmaps": concept_heatmaps,
             "concept_scores": concept_scores,

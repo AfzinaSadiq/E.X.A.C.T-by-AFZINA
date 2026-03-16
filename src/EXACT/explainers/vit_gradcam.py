@@ -1,3 +1,4 @@
+#explainers/vit_gradcame.py
 import cv2
 import numpy as np
 import torch
@@ -86,14 +87,7 @@ class ViTGradCAM:
         "eigencam": EigenCAM,
     }
 
-    def __init__(
-        self,
-        model,
-        arch="vit",
-        target_layer=None,
-        patch_size=None,
-        save_dir="user_saves/vit_cam_saves",
-    ):
+    def __init__(self, model, arch="vit", target_layer=None, patch_size=None, save_dir="user_saves/vit_cam_saves"):
         arch = arch.lower()
         if arch not in ("vit", "swin"):
             raise ValueError(f"arch must be 'vit' or 'swin', got '{arch}'")
@@ -122,15 +116,7 @@ class ViTGradCAM:
 
         return layer, reshape
 
-    def explain(
-        self,
-        input_tensor,
-        input_image=None,
-        targets=None,
-        method="gradcam",
-        class_name="",
-        save_png=False,
-    ):
+    def explain(self, input_tensor, input_image=None, targets=None, method="gradcam", class_name="", save_png=False):
         """
         Generate and visualize a CAM for a Vision Transformer.
 
@@ -190,6 +176,10 @@ class ViTGradCAM:
             input_image = input_image / 255.0
         input_image = np.float32(input_image)
 
+        if input_image.min() < 0.0:
+            input_image = (input_image - input_image.min()) / (input_image.max() - input_image.min() + 1e-8)
+        input_image = np.clip(input_image, 0.0, 1.0)
+
         # Resize CAM to match image if needed
         h, w = input_image.shape[:2]
         if cam.shape != (h, w):
@@ -205,7 +195,7 @@ class ViTGradCAM:
             print(f"✓ Saved: {filepath}")
 
         return {
-            "cam": cam,
+            "heatmap": cam,
             "visualization": visualization,
             "filepath": filepath,
             "method": method,

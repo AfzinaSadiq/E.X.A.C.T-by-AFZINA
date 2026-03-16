@@ -1,3 +1,4 @@
+#explainers/gradcam.py
 import cv2
 import numpy as np
 import torch
@@ -129,6 +130,9 @@ class GradCAM:
 
         if input_image.max() > 1.0:
             input_image = input_image / 255.0
+        if input_image.min() < 0.0:  # ImageNet-normalised tensors
+            input_image = (input_image - input_image.min()) / (input_image.max() - input_image.min() + 1e-8)
+        input_image = np.float32(np.clip(input_image, 0.0, 1.0))
 
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 
@@ -187,7 +191,7 @@ class GradCAM:
         visualization, filepath = self.visualize_and_save( input_image=input_image, cam=cam, method=method, class_name=class_name,save_png=save_png,)
 
         return {
-            "cam": cam,
+            "heatmap": cam,
             "visualization": visualization,
             "filepath": filepath,
             "method": method,
