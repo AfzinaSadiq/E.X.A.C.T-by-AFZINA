@@ -5,5 +5,7 @@ dist/
 build/
 *.egg-info/
 .eggs/
+sample_cat.jpg
+sample_dog.jpg
 
 .vscode/

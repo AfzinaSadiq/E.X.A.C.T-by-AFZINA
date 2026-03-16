@@ -39,11 +39,30 @@ def test_shap_tabular():
         def forward(self, x):
             return self.net(x)
 
+    torch.manual_seed(42)
     model = IrisModel().to(device)
-    model.eval()
 
     # --------------------------------------------------
-    # 3. Background data
+    # 3. Train the model
+    # --------------------------------------------------
+    X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train_t = torch.tensor(y_train, dtype=torch.long).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    criterion = nn.CrossEntropyLoss()
+
+    model.train()
+    for epoch in range(200):
+        optimizer.zero_grad()
+        loss = criterion(model(X_train_t), y_train_t)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    print(f"Training done  —  Final loss: {loss.item():.4f}")
+
+    # --------------------------------------------------
+    # 4. Background data
     #    Small representative sample from training set.
     #    SHAP uses this as the baseline reference distribution.
     # --------------------------------------------------
@@ -52,7 +71,7 @@ def test_shap_tabular():
     background_data = X_train[bg_indices]           # (50, 4)
 
     # --------------------------------------------------
-    # 4. Sample to explain  (same index as LIME test)
+    # 5. Sample to explain  (same index as LIME test)
     # --------------------------------------------------
     sample_index = 0
     instance     = X_test[sample_index]             # (4,)
@@ -64,7 +83,7 @@ def test_shap_tabular():
         print(f"  {name}: {value:.2f}")
 
     # --------------------------------------------------
-    # 5. Model prediction for this sample
+    # 6. Model prediction for this sample
     # --------------------------------------------------
     input_t = torch.tensor(instance, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
@@ -77,7 +96,7 @@ def test_shap_tabular():
     print(f"Probabilities   : {[f'{p:.4f}' for p in probs]}")
 
     # --------------------------------------------------
-    # 6. Test DeepExplainer  (default, recommended)
+    # 7. Test DeepExplainer  (default, recommended)
     # --------------------------------------------------
     print("\n\n================ EXPLAINER: DEEP ================")
 
@@ -100,7 +119,7 @@ def test_shap_tabular():
     )
 
     # --------------------------------------------------
-    # 7. Test GradientExplainer
+    # 8. Test GradientExplainer
     # --------------------------------------------------
     print("\n\n================ EXPLAINER: GRADIENT ================")
 
@@ -122,7 +141,7 @@ def test_shap_tabular():
     )
 
     # --------------------------------------------------
-    # 8. Test KernelExplainer  (slowest, model-agnostic)
+    # 9. Test KernelExplainer  (slowest, model-agnostic)
     # --------------------------------------------------
     print("\n\n================ EXPLAINER: KERNEL ================")
 
@@ -144,7 +163,7 @@ def test_shap_tabular():
     )
 
     # --------------------------------------------------
-    # 9. SHAP plots  (comment out if running headless)
+    # 10. SHAP plots  (comment out if running headless)
     # --------------------------------------------------
     print("\n\n================ SHAP PLOTS ================")
     print("Generating waterfall plot for DeepExplainer...")
@@ -153,6 +172,8 @@ def test_shap_tabular():
         data           = instance,
         instance_index = 0,
         class_index    = predicted,
+        save_png       = True,
+        save_dir       = "user_saves",
     )
 
     print("Generating summary plot for DeepExplainer...")
@@ -160,6 +181,9 @@ def test_shap_tabular():
     shap_explainer.summary_plot(
         explanation = explanation_batch,
         data        = X_test,
+        class_index = predicted,
+        save_png       = True,
+        save_dir       = "user_saves",
     )
 
     print("Generating force plot  [DEEP]...")
@@ -168,16 +192,20 @@ def test_shap_tabular():
         data           = instance,
         instance_index = 0,
         class_index    = predicted,
+        save_png       = True,
+        save_dir       = "user_saves",
     )
 
     print("Generating bar plot  [DEEP]  on full X_test...")
     shap.summary_plot(
-    explanation_batch["shap_values"],
-    X_test,
-    feature_names = feature_names,
-    plot_type     = "bar",
-    show          = True,
+        explanation_batch["shap_values"],
+        X_test,
+        feature_names = feature_names,
+        plot_type     = "bar",
+        show          = True,
+        save_png       = True,
+        save_dir       = "user_saves",
     )
-    
+
 if __name__ == "__main__":
     test_shap_tabular()
